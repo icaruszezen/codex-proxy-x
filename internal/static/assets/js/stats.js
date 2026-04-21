@@ -1,7 +1,144 @@
-import { isCredentialError, requestStatsPage } from "./api.js";
-import { escapeHtml, formatDate, formatNumber } from "./ui.js";
+import { isCredentialError, requestRecoverAuth, requestStatsPage } from "./api.js";
+import { buildAlert, escapeHtml, formatDate, formatNumber } from "./ui.js";
 
 const CACHE_KEY = "stats_cache_v2";
+
+function formatDurationText(value) {
+  const durationMs = Number(value ?? 0);
+  return durationMs > 0 ? `${formatNumber(durationMs)} ms` : "耗时未知";
+}
+
+function buildRecoverDescription(result, durationMs, defaultMessage = "") {
+  const parts = [];
+  if (defaultMessage) {
+    parts.push(defaultMessage);
+  }
+  if (result?.reason_code) {
+    parts.push(`原因：${result.reason_code}`);
+  }
+  if (result?.detail) {
+    parts.push(`详情：${result.detail}`);
+  }
+  if (Number(durationMs ?? 0) > 0) {
+    parts.push(`耗时：${formatDurationText(durationMs)}`);
+  }
+  return escapeHtml(parts.join("；"));
+}
+
+function buildSingleRecoverAlert(result, durationMs) {
+  const email = result?.email || "该账号";
+  switch (String(result?.status || "")) {
+    case "refreshed":
+      return buildAlert(
+        "success",
+        `账号 ${email} 已恢复`,
+        buildRecoverDescription(result, durationMs, "后端已完成同步刷新，请以刷新后的统计状态为准。")
+      );
+    case "cooldown_429_quota_ok":
+      return buildAlert(
+        "info",
+        `账号 ${email} 已进入保留恢复状态`,
+        buildRecoverDescription(result, durationMs, "后端在恢复过程中应用了 429 相关保留/冷却策略，请以刷新后的统计状态为准。")
+      );
+    case "skipped_busy":
+      return buildAlert(
+        "warning",
+        `账号 ${email} 暂未执行恢复`,
+        buildRecoverDescription(result, durationMs, "该账号可能正在被其他流程刷新，或后端同步恢复并发已满。")
+      );
+    case "disabled":
+      return buildAlert(
+        "error",
+        `账号 ${email} 已被禁用`,
+        buildRecoverDescription(result, durationMs, "后端判断该账号本次恢复未通过，已将账号标记为不可用。")
+      );
+    case "removed":
+      return buildAlert(
+        "error",
+        `账号 ${email} 已从账号池移除`,
+        buildRecoverDescription(result, durationMs, "后端判断该账号无法继续恢复，已将其移出当前账号池。")
+      );
+    case "invalid_input":
+      return buildAlert(
+        "error",
+        "401 恢复请求无效",
+        buildRecoverDescription(result, durationMs, "后端未接受这次恢复请求，请检查账号数据后重试。")
+      );
+    default:
+      return buildAlert(
+        "info",
+        `账号 ${email} 已返回恢复结果`,
+        buildRecoverDescription(result, durationMs)
+      );
+  }
+}
+
+function buildBulkRecoverAlert(response) {
+  const results = Array.isArray(response?.results) ? response.results : [];
+  const counts = {
+    refreshed: 0,
+    cooldown_429_quota_ok: 0,
+    skipped_busy: 0,
+    disabled: 0,
+    removed: 0,
+    invalid_input: 0,
+    other: 0
+  };
+
+  for (const item of results) {
+    const status = String(item?.status || "");
+    if (Object.prototype.hasOwnProperty.call(counts, status)) {
+      counts[status] += 1;
+    } else {
+      counts.other += 1;
+    }
+  }
+
+  const total = Number(response?.count ?? results.length ?? 0);
+  const parts = [];
+  if (counts.refreshed) {
+    parts.push(`已刷新 ${formatNumber(counts.refreshed)}`);
+  }
+  if (counts.cooldown_429_quota_ok) {
+    parts.push(`保留/冷却 ${formatNumber(counts.cooldown_429_quota_ok)}`);
+  }
+  if (counts.skipped_busy) {
+    parts.push(`跳过 ${formatNumber(counts.skipped_busy)}`);
+  }
+  if (counts.disabled) {
+    parts.push(`禁用 ${formatNumber(counts.disabled)}`);
+  }
+  if (counts.removed) {
+    parts.push(`移除 ${formatNumber(counts.removed)}`);
+  }
+  if (counts.invalid_input) {
+    parts.push(`无效 ${formatNumber(counts.invalid_input)}`);
+  }
+  if (counts.other) {
+    parts.push(`其他状态 ${formatNumber(counts.other)}`);
+  }
+
+  const detailParts = [];
+  detailParts.push(parts.length ? parts.join("，") : "后端未返回可统计的恢复结果。");
+  if (Number(response?.durationMs ?? 0) > 0) {
+    detailParts.push(`总耗时：${formatDurationText(response.durationMs)}`);
+  }
+
+  let type = "success";
+  if (counts.disabled || counts.removed || counts.invalid_input) {
+    type = "error";
+  } else if (counts.skipped_busy || counts.other) {
+    type = "warning";
+  } else if (counts.cooldown_429_quota_ok) {
+    type = "info";
+  }
+
+  return buildAlert(
+    type,
+    `批量 401 恢复已完成（共 ${formatNumber(total)} 个账号）`,
+    escapeHtml(detailParts.join("；"))
+  );
+}
 
 export function createStatsFeature({
   els,
@@ -19,7 +156,9 @@ export function createStatsFeature({
     memoryOnlyCache: false,
     searchTimer: 0,
     fetchController: null,
-    initialized: false
+    initialized: false,
+    recoveringEmails: new Set(),
+    isRecoveringAll: false
   };
 
   function safeGetCacheRaw() {
@@ -77,6 +216,16 @@ export function createStatsFeature({
     return Boolean(getCache()?.data);
   }
 
+  function setActionState(markup = "") {
+    els.statsActionState.innerHTML = markup;
+  }
+
+  function updateRecoverAllButton() {
+    const hasSingleRecover = state.recoveringEmails.size > 0;
+    els.recoverAllBtn.disabled = state.isRecoveringAll || hasSingleRecover;
+    els.recoverAllBtn.textContent = state.isRecoveringAll ? "批量恢复中..." : "批量 401 恢复";
+  }
+
   function updateCacheBadge() {
     if (!state.cache) {
       els.cacheState.textContent = "缓存：未加载";
@@ -110,6 +259,23 @@ export function createStatsFeature({
     `).join("");
   }
 
+  function buildRecoverAction(email) {
+    const safeEmail = String(email || "").trim();
+    if (!safeEmail) {
+      return "";
+    }
+    const isRecovering = state.isRecoveringAll || state.recoveringEmails.has(safeEmail);
+    return `
+      <button
+        type="button"
+        class="ghost row-action"
+        data-action="recover-auth"
+        data-email="${encodeURIComponent(safeEmail)}"
+        ${isRecovering ? "disabled" : ""}
+      >${isRecovering ? "恢复中..." : "401恢复"}</button>
+    `;
+  }
+
   function renderTable(rows, pageMeta) {
     state.currentRows = rows || [];
     state.pagination = pageMeta || null;
@@ -124,8 +290,17 @@ export function createStatsFeature({
       const tr = document.createElement("tr");
       const usage = row.usage || {};
       const statusClass = ["active", "cooldown", "disabled"].includes(row.status) ? row.status : "disabled";
+      const email = String(row.email || "").trim();
+      const emailCell = email
+        ? `
+          <div class="account-cell">
+            <span class="account-email">${escapeHtml(email)}</span>
+            ${buildRecoverAction(email)}
+          </div>
+        `
+        : "<span class=\"muted\">--</span>";
       tr.innerHTML = `
-        <td>${escapeHtml(row.email || "--")}</td>
+        <td>${emailCell}</td>
         <td><span class="status ${statusClass}">${escapeHtml(row.status || "--")}</span></td>
         <td>${escapeHtml(row.plan_type || "--")}</td>
         <td>${formatNumber(row.total_requests)}</td>
@@ -148,6 +323,7 @@ export function createStatsFeature({
         : `${formatNumber(total)} 条记录，当前页无数据`;
     els.prevBtn.disabled = state.currentPage === 1;
     els.nextBtn.disabled = state.currentPage === totalPages;
+    updateRecoverAllButton();
   }
 
   function showPlaceholder(show) {
@@ -161,6 +337,7 @@ export function createStatsFeature({
       els.nextBtn.disabled = true;
       state.pagination = null;
       state.currentRows = [];
+      updateRecoverAllButton();
     }
   }
 
@@ -193,10 +370,90 @@ export function createStatsFeature({
     }
   }
 
-  async function fetchStats() {
+  function handleRecoverError(title, error) {
+    const message = error?.message || "未知错误";
+    if (isCredentialError(error) && typeof onCredentialError === "function") {
+      onCredentialError(message, error);
+      return;
+    }
+    setActionState(buildAlert("error", title, escapeHtml(message)));
+  }
+
+  async function refreshAfterRecover(options = {}) {
+    const { showLoading = true } = options;
+    clearCache();
+    await fetchStats({ showLoading });
+  }
+
+  async function handleRecoverByEmail(email) {
+    const safeEmail = String(email || "").trim();
+    if (!safeEmail || state.isRecoveringAll || state.recoveringEmails.has(safeEmail)) {
+      return;
+    }
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials();
+      return;
+    }
+    state.recoveringEmails.add(safeEmail);
+    renderTable(state.currentRows, state.pagination);
+    try {
+      const response = await requestRecoverAuth(cred, { email: safeEmail });
+      setActionState(buildSingleRecoverAlert(response.result || { email: safeEmail }, response.durationMs));
+      await refreshAfterRecover({ showLoading: false });
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+      handleRecoverError(`账号 ${safeEmail} 401 恢复失败`, error);
+    } finally {
+      state.recoveringEmails.delete(safeEmail);
+      renderTable(state.currentRows, state.pagination);
+    }
+  }
+
+  async function handleRecoverAll() {
+    if (state.isRecoveringAll || state.recoveringEmails.size > 0) {
+      return;
+    }
+    const confirmed = window.confirm("批量 401 恢复会顺序请求后端处理当前账号池中的全部账号，账号较多时可能耗时较长。确定继续吗？");
+    if (!confirmed) {
+      return;
+    }
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials();
+      return;
+    }
+    state.isRecoveringAll = true;
+    updateRecoverAllButton();
+    renderTable(state.currentRows, state.pagination);
+    setActionState(buildAlert("info", "已开始批量 401 恢复", escapeHtml("正在顺序请求后端恢复全部账号，请稍候。")));
+    onLoadingChange(true);
+    try {
+      const response = await requestRecoverAuth(cred, { all: true });
+      setActionState(buildBulkRecoverAlert(response));
+      await refreshAfterRecover();
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+      handleRecoverError("批量 401 恢复失败", error);
+    } finally {
+      state.isRecoveringAll = false;
+      updateRecoverAllButton();
+      onLoadingChange(false);
+      renderTable(state.currentRows, state.pagination);
+    }
+  }
+
+  async function fetchStats(options = {}) {
+    const { showLoading = true } = options;
     els.cacheState.textContent = "缓存：加载中...";
     els.cacheNote.textContent = "";
-    onLoadingChange(true);
+    if (showLoading) {
+      onLoadingChange(true);
+    }
     abort();
     const controller = new AbortController();
     state.fetchController = controller;
@@ -223,7 +480,9 @@ export function createStatsFeature({
     } finally {
       if (state.fetchController === controller) {
         state.fetchController = null;
-        onLoadingChange(false);
+        if (showLoading) {
+          onLoadingChange(false);
+        }
       }
     }
   }
@@ -261,12 +520,27 @@ export function createStatsFeature({
       clearCache();
       showPlaceholder(true);
     });
+    els.recoverAllBtn.addEventListener("click", () => {
+      void handleRecoverAll();
+    });
     els.searchInput.addEventListener("input", () => {
       window.clearTimeout(state.searchTimer);
       state.searchTimer = window.setTimeout(() => {
         state.currentPage = 1;
         void fetchStats();
       }, 250);
+    });
+    els.tableBody.addEventListener("click", event => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const button = target.closest("[data-action='recover-auth']");
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const email = button.dataset.email ? decodeURIComponent(button.dataset.email) : "";
+      void handleRecoverByEmail(email);
     });
   }
 
@@ -275,6 +549,8 @@ export function createStatsFeature({
       return;
     }
     state.initialized = true;
+    setActionState("");
+    updateRecoverAllButton();
     const existing = getCache();
     if (existing?.data) {
       render(existing.data);

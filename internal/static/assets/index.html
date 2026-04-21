@@ -18,6 +18,7 @@
         <button id="importViewBtn" class="secondary">账号导入</button>
         <button id="refreshBtn">刷新数据</button>
         <button id="clearBtn" class="secondary">清空缓存</button>
+        <button id="recoverAllBtn" class="ghost">批量 401 恢复</button>
         <button id="settingsBtn" class="ghost">设置接口</button>
         <span class="pill" id="cacheState">缓存：未加载</span>
       </div>
@@ -26,6 +27,7 @@
     <main class="view-stack">
       <section id="statsView" class="view">
         <section class="grid" id="summaryCards"></section>
+        <section id="statsActionState" class="alert-stack stats-action-state" aria-live="polite"></section>
         <section id="placeholder" class="placeholder" aria-hidden="true">
           <div class="placeholder-row">
             <div class="skeleton big"></div>

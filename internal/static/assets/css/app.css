@@ -302,6 +302,35 @@ tr:hover td {
   color: #475569;
 }
 
+.stats-action-state {
+  margin-top: -8px;
+}
+
+.account-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.account-email {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row-action {
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.row-action.ghost {
+  background: #fffaf0;
+}
+
 .pagination {
   display: flex;
   gap: 8px;
@@ -624,5 +653,14 @@ tr:hover td {
   .import-actions button,
   .login-actions button {
     flex: 1 1 auto;
+  }
+
+  .account-cell {
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .row-action {
+    padding: 5px 10px;
   }
 }

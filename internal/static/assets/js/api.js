@@ -151,3 +151,34 @@ export async function requestAccountsIngest(cred, payload, signal) {
     errors: Array.isArray(data?.errors) ? data.errors : []
   };
 }
+
+export async function requestRecoverAuth(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = payload?.all
+    ? { all: true }
+    : { email: String(payload?.email || "").trim() };
+  if (!body.all && !body.email) {
+    throw new Error("缺少可恢复的账号邮箱");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/recover-auth"), {
+    method: "POST",
+    headers: buildHeaders(cred, {
+      "Content-Type": "application/json"
+    }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    object: String(data?.object || ""),
+    result: data?.result || null,
+    results: Array.isArray(data?.results) ? data.results : [],
+    count: Number(data?.count ?? 0),
+    durationMs: Number(data?.duration_ms ?? data?.durationMs ?? 0)
+  };
+}

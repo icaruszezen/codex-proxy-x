@@ -12,11 +12,13 @@ const els = {
   importViewBtn: document.getElementById("importViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   clearBtn: document.getElementById("clearBtn"),
+  recoverAllBtn: document.getElementById("recoverAllBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
   cacheState: document.getElementById("cacheState"),
   statsView: document.getElementById("statsView"),
   importView: document.getElementById("importView"),
   summaryCards: document.getElementById("summaryCards"),
+  statsActionState: document.getElementById("statsActionState"),
   tableBody: document.getElementById("tableBody"),
   pageSize: document.getElementById("pageSize"),
   pageInfo: document.getElementById("pageInfo"),
@@ -145,6 +147,7 @@ function updateViewState() {
   els.importViewBtn.classList.toggle("active", isImport);
   els.refreshBtn.classList.toggle("hidden", isImport);
   els.clearBtn.classList.toggle("hidden", isImport);
+  els.recoverAllBtn.classList.toggle("hidden", isImport);
 }
 
 function setView(view, options = {}) {
