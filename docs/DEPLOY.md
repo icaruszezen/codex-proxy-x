@@ -10,7 +10,7 @@
 
 ## 方式一：预编译包（Release）
 
-1. 在 [Releases](https://github.com/XxxXTeam/codex-proxy/releases) 下载对应平台的 zip，并用同目录 `SHA256SUMS.txt` 校验。
+1. 在 [Releases](https://github.com/icaruszezen/codex-proxy-x/releases) 下载对应平台的 zip，并用同目录 `SHA256SUMS.txt` 校验。
 2. 解压后复制 `config.yaml`，按 [配置说明](CONFIGURATION.md) 编辑。
 3. 将账号 JSON 放入 `auth-dir` 指向的目录（默认 `./auths`）。
 4. 启动：
@@ -34,7 +34,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o codex-proxy .
 
 ## 方式三：Docker 单容器
 
-镜像由 CI 推送至 GitHub Container Registry，路径与仓库名一致（例如 `ghcr.io/XxxXTeam/codex-proxy`；拉取时若失败可尝试全小写组织名）。
+镜像由 CI 推送至 GitHub Container Registry，路径与当前仓库名一致，例如 `ghcr.io/icaruszezen/codex-proxy-x`。
 
 1. 在宿主机准备 `config.yaml` 与 `auths/` 目录。
 2. 运行示例：
@@ -45,7 +45,7 @@ docker run -d --name codex-proxy \
   -v /path/to/config.yaml:/app/config.yaml:ro \
   -v /path/to/auths:/app/auths \
   --restart unless-stopped \
-  ghcr.io/XxxXTeam/codex-proxy:latest
+  ghcr.io/icaruszezen/codex-proxy-x:latest
 ```
 
 容器内默认命令为 `-config /app/config.yaml`，时区为 `Asia/Shanghai`。若使用数据库模式，请保证容器能访问 `db-host`（勿写 `127.0.0.1` 指宿主机，应使用宿主机 IP 或 Docker 网络中的服务名）。

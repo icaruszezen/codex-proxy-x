@@ -1,8 +1,10 @@
 # Codex Proxy
 
-[![Go](https://img.shields.io/github/go-mod/go-version/XxxXTeam/codex-proxy?label=Go)](go.mod)
+[![Go](https://img.shields.io/github/go-mod/go-version/icaruszezen/codex-proxy-x?label=Go)](go.mod)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/XxxXTeam/codex-proxy?label=Release)](https://github.com/XxxXTeam/codex-proxy/releases)
+[![Release](https://img.shields.io/github/v/release/icaruszezen/codex-proxy-x?label=Release)](https://github.com/icaruszezen/codex-proxy-x/releases)
+
+本仓库是基于上游仓库 [XxxXTeam/codex-proxy](https://github.com/XxxXTeam/codex-proxy) 的独立公开衍生仓库；当前 Release、文档与容器镜像入口均以 `icaruszezen/codex-proxy-x` 为准，如需同步原项目更新，请使用已配置的 `upstream` 远程。
 
 Codex API 代理服务，提供 OpenAI / Claude 多协议兼容接口，支持多账号轮询、内部重试、自动 Token 刷新。
 
@@ -125,7 +127,7 @@ go build -o codex-proxy .
 
 ### 5. Docker
 
-镜像发布至 `ghcr.io/XxxXTeam/codex-proxy`（amd64 / arm64）。打标签或工作流触发时会推送，详见 [.github/workflows/release.yml](.github/workflows/release.yml)。容器启动与卷挂载的详细步骤见 [docs/DEPLOY.md](docs/DEPLOY.md)。
+镜像发布至 `ghcr.io/icaruszezen/codex-proxy-x`（amd64 / arm64）。打标签或工作流触发时会推送，详见 [.github/workflows/release.yml](.github/workflows/release.yml)。容器启动与卷挂载的详细步骤见 [docs/DEPLOY.md](docs/DEPLOY.md)。
 
 ### 6. 调用接口
 
@@ -260,7 +262,7 @@ codex-proxy/
 
 ## Star 历史
 
-[![Star History Chart](https://api.star-history.com/svg?repos=XxxXTeam/codex-proxy&type=Date)](https://star-history.com/#XxxXTeam/codex-proxy&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=icaruszezen/codex-proxy-x&type=Date)](https://star-history.com/#icaruszezen/codex-proxy-x&Date)
 
 ## 许可证
 

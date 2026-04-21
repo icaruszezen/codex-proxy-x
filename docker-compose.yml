@@ -29,7 +29,7 @@ services:
 
   codex-proxy:
     build: .
-    image: ghcr.io/xxxxteam/codex-proxy:latest
+    image: ghcr.io/icaruszezen/codex-proxy-x:latest
     profiles: ["app"]
     container_name: codex-proxy-app
     restart: always
