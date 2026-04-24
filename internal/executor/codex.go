@@ -32,8 +32,8 @@ import (
 
 /* Codex 客户端版本常量，用于请求头 */
 const (
-	codexClientVersion = "0.118.0"
-	codexUserAgent     = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+	codexClientVersion = "0.124.0"
+	codexUserAgent     = "codex-tui/0.124.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.124.0)"
 	codexOriginator    = "codex-tui"
 )
 
