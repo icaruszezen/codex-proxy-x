@@ -1,5 +1,68 @@
 # Changelog
 
+## [1.8.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.7.0...v1.8.0) (2026-04-24)
+
+
+### ✨ 新功能
+
+* **proxy:** 添加 /v1/responses/compact 路由和测试 ([e997591](https://github.com/icaruszezen/codex-proxy-x/commit/e997591e76cd28ace393394964c2f6c7ae42864f))
+* **static:** add asset handling and serve static files ([00340e4](https://github.com/icaruszezen/codex-proxy-x/commit/00340e4973f56039f80d8b1ea953752193fcfb28))
+* **stats:** implement bulk recovery feature for accounts ([0f0afec](https://github.com/icaruszezen/codex-proxy-x/commit/0f0afec665b2c518fce9d25f647a96639d87d7cc))
+* 修复部分情况下的账号请求429问题，优化换号与请求实现，完善配置文件相关示例 ([0a59ad9](https://github.com/icaruszezen/codex-proxy-x/commit/0a59ad9de8257c854a42a868e4d094920a07b9c4))
+* 实验性支持Image模型，支持命令行OAuth登录授权Codex账号 ([40a9bfd](https://github.com/icaruszezen/codex-proxy-x/commit/40a9bfd722b254fea8e90000eeb759aaaf932fff))
+* 支持自适应连接池配置，优化请求与转发性能 ([b73d9a1](https://github.com/icaruszezen/codex-proxy-x/commit/b73d9a10b3a5325bbed85df4630ac5ee906f3339))
+* 添加可选是否显示1m and fast ([53fddea](https://github.com/icaruszezen/codex-proxy-x/commit/53fddeabf7504fda2ad21d72a1e377981af7dcd0))
+* 适配1m模型，修复fast模型参数传递问题，性能优化 ([3906118](https://github.com/icaruszezen/codex-proxy-x/commit/3906118993315ee813f919e96c14b40dfc5fe3ac))
+
+
+### 🐛 错误修复
+
+* 优化工作流打包文件错误问题 ([2381ddb](https://github.com/icaruszezen/codex-proxy-x/commit/2381ddb4deec2405e82a6b94c3339ada23954b3f))
+* 修复1m上下文与fast模式参数传递错误问题，细节优化 ([d601552](https://github.com/icaruszezen/codex-proxy-x/commit/d60155275d1ef2d68eb6b26e2e1b2b239a23cd73))
+* 修复在auth文件为空时的panic问题，支持rk为空或null的支持 ([4214ee9](https://github.com/icaruszezen/codex-proxy-x/commit/4214ee9b6d30657cdb26d84ae5c4d75d433dbfbe))
+* 修复工作流配置权限错误问题 ([1ed95c9](https://github.com/icaruszezen/codex-proxy-x/commit/1ed95c9459cb751b079c7b5ac3feccefd8f800d4))
+* 删除测试文件 ([bea00da](https://github.com/icaruszezen/codex-proxy-x/commit/bea00da3a567691a8313487901350bab084ae3c7))
+
+
+### 🔧 其他更新
+
+* **master:** release 1.2.0 ([#12](https://github.com/icaruszezen/codex-proxy-x/issues/12)) ([6ca53c6](https://github.com/icaruszezen/codex-proxy-x/commit/6ca53c639fd82bb2ec8724f46fe6c972bae9620c))
+* **master:** release 1.2.1 ([#17](https://github.com/icaruszezen/codex-proxy-x/issues/17)) ([82424f5](https://github.com/icaruszezen/codex-proxy-x/commit/82424f558e3234f5780c998f94272e9555eec094))
+* **master:** release 1.3.0 ([#18](https://github.com/icaruszezen/codex-proxy-x/issues/18)) ([1d2a820](https://github.com/icaruszezen/codex-proxy-x/commit/1d2a8205739e55b98b6d79ceaeea31d7b50c5123))
+* **master:** release 1.4.0 ([#19](https://github.com/icaruszezen/codex-proxy-x/issues/19)) ([eeae522](https://github.com/icaruszezen/codex-proxy-x/commit/eeae5223907c218e483352910952b405068e6967))
+* **master:** release 1.5.0 ([#20](https://github.com/icaruszezen/codex-proxy-x/issues/20)) ([cfa9dbb](https://github.com/icaruszezen/codex-proxy-x/commit/cfa9dbbd89eb742e4b14130c1a81c577179b1256))
+* **master:** release 1.6.0 ([#25](https://github.com/icaruszezen/codex-proxy-x/issues/25)) ([a3dabe7](https://github.com/icaruszezen/codex-proxy-x/commit/a3dabe7d0d91452508204ffb0daf1acb7e2a422a))
+* **master:** release 1.6.1 ([#31](https://github.com/icaruszezen/codex-proxy-x/issues/31)) ([1d22afd](https://github.com/icaruszezen/codex-proxy-x/commit/1d22afd272e6e3c9d2690fc9a918a1b6fbd12df1))
+* **master:** release 1.6.2 ([#32](https://github.com/icaruszezen/codex-proxy-x/issues/32)) ([54773de](https://github.com/icaruszezen/codex-proxy-x/commit/54773deed5e5f0543cadbb43fe50fce7b0f5387c))
+* **master:** release 1.7.0 ([#34](https://github.com/icaruszezen/codex-proxy-x/issues/34)) ([490a2f6](https://github.com/icaruszezen/codex-proxy-x/commit/490a2f6bb71c994f1e8aa69e550e122e6ec1accf))
+* update repository references from XxxXTeam to icaruszezen ([95a4a5d](https://github.com/icaruszezen/codex-proxy-x/commit/95a4a5d46786f2c1ca46730f770c714bcd457f0f))
+
+
+### 📦 依赖更新
+
+* **ci:** bump actions/checkout from 4 to 6 ([#14](https://github.com/icaruszezen/codex-proxy-x/issues/14)) ([ed47be0](https://github.com/icaruszezen/codex-proxy-x/commit/ed47be0f38666a716f7a83973748886b0303a7a2))
+* **ci:** bump actions/download-artifact from 4 to 8 ([#23](https://github.com/icaruszezen/codex-proxy-x/issues/23)) ([37ed431](https://github.com/icaruszezen/codex-proxy-x/commit/37ed43151b998b035991412f681c1d5b88b2839a))
+* **ci:** bump actions/setup-go from 5 to 6 ([#15](https://github.com/icaruszezen/codex-proxy-x/issues/15)) ([3dda587](https://github.com/icaruszezen/codex-proxy-x/commit/3dda5878976d19aa7b9f443f33909773cdae21e1))
+* **ci:** bump actions/upload-artifact from 4 to 7 ([#24](https://github.com/icaruszezen/codex-proxy-x/issues/24)) ([eda64e7](https://github.com/icaruszezen/codex-proxy-x/commit/eda64e7c14f277700c892715bb24eea796498c74))
+* **ci:** bump softprops/action-gh-release from 2 to 3 ([#30](https://github.com/icaruszezen/codex-proxy-x/issues/30)) ([b5d0bd1](https://github.com/icaruszezen/codex-proxy-x/commit/b5d0bd19f52acac22a28a4deea1289643232019a))
+* **go:** bump github.com/lib/pq from 1.12.0 to 1.12.3 ([#22](https://github.com/icaruszezen/codex-proxy-x/issues/22)) ([25e876e](https://github.com/icaruszezen/codex-proxy-x/commit/25e876e30f94a63d79d5a97bc089296130dd6850))
+* **go:** bump github.com/valyala/fasthttp from 1.69.0 to 1.70.0 ([#29](https://github.com/icaruszezen/codex-proxy-x/issues/29)) ([abadc64](https://github.com/icaruszezen/codex-proxy-x/commit/abadc64a705bdf6562063f4ea5bf33ae76264890))
+* **go:** bump golang.org/x/net in the golang-org-x group ([#27](https://github.com/icaruszezen/codex-proxy-x/issues/27)) ([90bf8e7](https://github.com/icaruszezen/codex-proxy-x/commit/90bf8e71dbfefad47229e86b3040159904f6a406))
+* **go:** bump modernc.org/sqlite from 1.47.0 to 1.48.0 ([#13](https://github.com/icaruszezen/codex-proxy-x/issues/13)) ([955d498](https://github.com/icaruszezen/codex-proxy-x/commit/955d4987eac279f08ac0002fdc40c59791d34acd))
+* **go:** bump modernc.org/sqlite from 1.48.0 to 1.48.1 ([#21](https://github.com/icaruszezen/codex-proxy-x/issues/21)) ([a86e8ef](https://github.com/icaruszezen/codex-proxy-x/commit/a86e8eff0eebf5a50e9fbe68dd19997f983f31c2))
+* **go:** bump modernc.org/sqlite from 1.48.1 to 1.48.2 ([#28](https://github.com/icaruszezen/codex-proxy-x/issues/28)) ([2956c27](https://github.com/icaruszezen/codex-proxy-x/commit/2956c273e1f8109e830ef884b9a88a55181f885c))
+* **go:** bump modernc.org/sqlite from 1.48.2 to 1.49.1 ([#33](https://github.com/icaruszezen/codex-proxy-x/issues/33)) ([dffa40f](https://github.com/icaruszezen/codex-proxy-x/commit/dffa40f6f075afea410bc3e919b0254847687f51))
+
+
+### 🎡 持续集成
+
+* 优化工作流 ([c13a796](https://github.com/icaruszezen/codex-proxy-x/commit/c13a796aaa344d6a590d7cbd5805991a3a2132b4))
+* 修复工作流 ([f5b4e6b](https://github.com/icaruszezen/codex-proxy-x/commit/f5b4e6b562d11ce33729350b81c93fe3e824a6a5))
+* 修复自动发版 ([524dd12](https://github.com/icaruszezen/codex-proxy-x/commit/524dd12858dbcc0eb32ce3f6bbd571f7ee780745))
+* 分支写错了... ([88e19dc](https://github.com/icaruszezen/codex-proxy-x/commit/88e19dc33137ba4f88aa158b9912664645f26424))
+* 更新依赖版本以及go.sum文件 ([1507119](https://github.com/icaruszezen/codex-proxy-x/commit/15071197f2d1b93c182920a109284fe69b026f40))
+* 添加自动发版 ([815b727](https://github.com/icaruszezen/codex-proxy-x/commit/815b7271b09c4b8cfdae4a593b3635a7862ffde3))
+
 ## [1.7.0](https://github.com/XxxXTeam/codex-proxy/compare/v1.6.2...v1.7.0) (2026-04-22)
 
 
