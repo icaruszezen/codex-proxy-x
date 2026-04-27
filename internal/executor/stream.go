@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,6 +40,8 @@ type CodexResponsesStream struct {
 	reopenFn func(ctx context.Context) (io.ReadCloser, CodexResponsesMeta, error)
 	/* debugUpstreamStream 为 true 时 Info 打印上游原始 SSE（配置 debug-upstream-stream） */
 	debugUpstreamStream bool
+	/* dropPartialImage 为 true 时 PumpRawSSE 丢弃 response.image_generation_call.partial_image 帧 */
+	dropPartialImage bool
 }
 
 /* Body 返回当前上游响应体，供外部 pump 读取 SSE */
@@ -205,6 +208,7 @@ func (e *Executor) OpenCodexResponsesStream(ctx context.Context, rc RetryConfig,
 		pumpRounds:          codexStreamPumpRounds(rc.MaxRetry),
 		reopenExcluded:      make(map[string]bool),
 		debugUpstreamStream: rc.DebugUpstreamStream,
+		dropPartialImage:    e.dropPartialImage,
 	}
 	s.reopenFn = func(ctx context.Context) (io.ReadCloser, CodexResponsesMeta, error) {
 		rcEx := MergeRetryConfigExcluded(rc, s.reopenExcluded)
@@ -445,56 +449,91 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 	return nil
 }
 
-// PumpRawSSE 原样转发上游 SSE 字节（Responses API，仅写 w 即响应体）。
+// PumpRawSSE 转发上游 SSE 给客户端（Responses API，仅写 w 即响应体）。
+// 若启用 dropPartialImage，会按 SSE 帧解析并丢弃 response.image_generation_call.partial_image（每帧 base64 数 MB），
+// 其它事件原样下发；否则保持纯字节透传。
 // 若尚未向 w 写入任何字节（已发的 HTTP 响应头不计入），遇读错误、io.EOF 且无字节等均换号重连，次数与 pumpRounds 对齐；除 context.Canceled 外不因「非 GOAWAY」拒绝换号。
 func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 	defer func() { _ = s.body.Close() }()
-	buf := make([]byte, httpBufferSize)
 	streamStart := time.Now()
 	// 仅统计经 w 写入的 SSE 响应体字节；与 fasthttp SetBodyStreamWriter 一致，状态行/响应头不在此 Writer 上。
 	sseBodyBytes := 0
 	var pumpErr error
 	pumpCtx := context.Background()
 
+	useFrameFilter := s.dropPartialImage
+	buf := make([]byte, httpBufferSize)
+
 	for round := 0; round < s.pumpRounds; round++ {
 		pumpErr = nil
-		for {
-			n, readErr := s.body.Read(buf)
-			if n > 0 {
-				if s.debugUpstreamStream {
-					ae := ""
-					if s.account != nil {
-						ae = s.account.GetEmail()
+		if useFrameFilter {
+			n, fErr := pumpResponsesSSEFiltered(s.body, w, flush, &sseBodyBytes, s.debugUpstreamStream, s.BaseModel, s.account)
+			_ = n
+			if fErr != nil {
+				if errors.Is(fErr, context.Canceled) {
+					log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (canceled)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+					if sseBodyBytes == 0 {
+						return fmt.Errorf("读取流式响应中断: %w", fErr)
 					}
-					logUpstreamStreamChunk("responses_raw_read", s.BaseModel, ae, buf[:n])
+					return nil
 				}
-				if _, werr := w.Write(buf[:n]); werr != nil {
-					return werr
-				}
-				sseBodyBytes += n
-				if flush != nil {
-					flush()
-				}
-			}
-			if readErr != nil {
-				if readErr == io.EOF {
+				if fErr == io.EOF {
 					if sseBodyBytes > 0 {
 						s.account.RecordSuccess()
 						log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 						return nil
 					}
 					pumpErr = io.EOF
-					break
+				} else {
+					pumpErr = fErr
 				}
-				if errors.Is(readErr, context.Canceled) {
-					log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (canceled)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
-					if sseBodyBytes == 0 {
-						return fmt.Errorf("读取流式响应中断: %w", readErr)
-					}
+			} else {
+				if sseBodyBytes > 0 {
+					s.account.RecordSuccess()
+					log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 					return nil
 				}
-				pumpErr = readErr
-				break
+				pumpErr = io.EOF
+			}
+		} else {
+			for {
+				n, readErr := s.body.Read(buf)
+				if n > 0 {
+					if s.debugUpstreamStream {
+						ae := ""
+						if s.account != nil {
+							ae = s.account.GetEmail()
+						}
+						logUpstreamStreamChunk("responses_raw_read", s.BaseModel, ae, buf[:n])
+					}
+					if _, werr := w.Write(buf[:n]); werr != nil {
+						return werr
+					}
+					sseBodyBytes += n
+					if flush != nil {
+						flush()
+					}
+				}
+				if readErr != nil {
+					if readErr == io.EOF {
+						if sseBodyBytes > 0 {
+							s.account.RecordSuccess()
+							log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+							return nil
+						}
+						pumpErr = io.EOF
+						break
+					}
+					if errors.Is(readErr, context.Canceled) {
+						log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (canceled)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+						if sseBodyBytes == 0 {
+							return fmt.Errorf("读取流式响应中断: %w", readErr)
+						}
+						return nil
+					}
+					pumpErr = readErr
+					break
+				}
 			}
 		}
 
@@ -625,4 +664,92 @@ func (s *CodexCompactStream) PumpBody(w io.Writer, flush func()) error {
 			return wrapReadErr(err)
 		}
 	}
+}
+
+/* sseFrameDropEventTypes 列出所有需要在转发时丢弃的 data.type；当前仅 partial_image 帧。 */
+var sseFrameDropEventTypes = map[string]struct{}{
+	"response.image_generation_call.partial_image": {},
+}
+
+/* pumpResponsesSSEFiltered 按 SSE 帧扫描上游字节，逐帧重组后写入 w；遇到 data.type 命中黑名单时整帧丢弃。
+ * @returns 写出帧数与读取错误（io.EOF 或其它）。
+ *
+ * 协议简化：上游 /responses 每帧形如 `event: <name>\ndata: <json>\n\n`，且 data 一定是单行 JSON；
+ * 因此按行扫描、遇空行结束当前帧即可，无需支持多行 data。
+ */
+func pumpResponsesSSEFiltered(body io.Reader, w io.Writer, flush func(), bytesWritten *int, debug bool, baseModel string, acc *auth.Account) (int, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, scannerInitSize), scannerMaxSize)
+	frames := 0
+	var frameBuf []byte
+	var dataLine []byte
+	flushFrame := func() error {
+		if len(frameBuf) == 0 {
+			frameBuf = frameBuf[:0]
+			dataLine = nil
+			return nil
+		}
+		drop := false
+		if len(dataLine) > 0 {
+			t := gjson.GetBytes(dataLine, "type").String()
+			if _, ok := sseFrameDropEventTypes[t]; ok {
+				drop = true
+			}
+		}
+		if !drop {
+			if debug {
+				ae := ""
+				if acc != nil {
+					ae = acc.GetEmail()
+				}
+				logUpstreamStreamChunk("responses_raw_frame", baseModel, ae, frameBuf)
+			}
+			n, werr := w.Write(frameBuf)
+			if n > 0 {
+				*bytesWritten += n
+			}
+			if werr != nil {
+				return werr
+			}
+			n, werr = w.Write([]byte("\n\n"))
+			if n > 0 {
+				*bytesWritten += n
+			}
+			if werr != nil {
+				return werr
+			}
+			if flush != nil {
+				flush()
+			}
+			frames++
+		}
+		frameBuf = frameBuf[:0]
+		dataLine = nil
+		return nil
+	}
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+		// 空行 = 一帧结束
+		if len(raw) == 0 {
+			if err := flushFrame(); err != nil {
+				return frames, err
+			}
+			continue
+		}
+		// 累计当前帧（保留原始换行结构，便于客户端按 SSE 解析）
+		if len(frameBuf) > 0 {
+			frameBuf = append(frameBuf, '\n')
+		}
+		frameBuf = append(frameBuf, raw...)
+		if bytes.HasPrefix(raw, []byte("data:")) {
+			dataLine = bytes.TrimSpace(raw[5:])
+		}
+	}
+	if err := flushFrame(); err != nil {
+		return frames, err
+	}
+	if err := scanner.Err(); err != nil {
+		return frames, err
+	}
+	return frames, io.EOF
 }

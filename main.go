@@ -322,6 +322,7 @@ func main() {
 		HTTP2MaxConnsPerHostCap:  cfg.HTTP2MaxConnsPerHostCap,
 		ResponseHeaderTimeoutSec: cfg.UpstreamResponseHeaderTimeoutSec,
 	})
+	exec.SetDropPartialImage(cfg.ResponsesStreamDropPartialImage)
 
 	/* 延迟启动连接池保活（在服务启动后异步进行） */
 	go func() {

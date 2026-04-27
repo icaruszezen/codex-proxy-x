@@ -171,6 +171,11 @@ startup-async-load: true
 # enable-model-suffix-1m: true
 # enable-model-suffix-image: true
 
+# /v1/responses 流式转发时是否丢弃巨大的图片预览帧 response.image_generation_call.partial_image
+# （每帧 base64 数 MB，仅是预览；最终图片仍通过 response.output_item.done 透传给客户端）。
+# 默认 true；如需要保留预览动画可显式置 false。
+# responses-stream-drop-partial-image: true
+
 # /v1/responses 是否接受 WebSocket 升级（true 时 WS 客户端自动升级；false 则全部走 HTTP SSE）
 # enable-websocket: true
 

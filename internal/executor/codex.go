@@ -83,6 +83,16 @@ type Executor struct {
 	keepAliveOnce        sync.Once
 	resolveAddr          string
 	keepaliveIntervalSec int
+	/* dropPartialImage 控制 /v1/responses 流式转发是否丢弃 response.image_generation_call.partial_image 中间帧 */
+	dropPartialImage bool
+}
+
+/* SetDropPartialImage 设置是否在流式响应中过滤 partial_image 帧 */
+func (e *Executor) SetDropPartialImage(v bool) {
+	if e == nil {
+		return
+	}
+	e.dropPartialImage = v
 }
 
 /**
@@ -818,14 +828,31 @@ func (e *Executor) ExecuteNonStream(ctx context.Context, rc RetryConfig, request
 		scanner.Buffer(make([]byte, scannerInitSize), scannerMaxSize)
 		var result []byte
 		gotValid := false
+		var collectedItems [][]byte
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if !bytes.HasPrefix(line, []byte("data:")) {
 				continue
 			}
 			jsonData := bytes.TrimSpace(line[5:])
-			if gjson.GetBytes(jsonData, "type").String() != "response.completed" {
+			evtType := gjson.GetBytes(jsonData, "type").String()
+			if evtType == "response.output_item.done" {
+				if it := gjson.GetBytes(jsonData, "item"); it.Exists() && isAggregatableOutputItem(it) {
+					itemCopy := make([]byte, len(it.Raw))
+					copy(itemCopy, it.Raw)
+					collectedItems = append(collectedItems, itemCopy)
+				}
 				continue
+			}
+			if evtType != "response.completed" {
+				continue
+			}
+			if len(collectedItems) > 0 {
+				/* 把中间事件中的图片 item 合并到 response.output 后再交给转换器 */
+				if respRaw := gjson.GetBytes(jsonData, "response"); respRaw.Exists() {
+					merged := mergeAggregatedItemsIntoResponse([]byte(respRaw.Raw), collectedItems)
+					jsonData, _ = sjson.SetRawBytes(jsonData, "response", merged)
+				}
 			}
 			resStr, hasOutput := translator.ConvertNonStreamResponse(jsonData, reverseToolMap)
 			if !hasOutput {
@@ -945,13 +972,25 @@ func (e *Executor) ExecuteResponsesNonStream(ctx context.Context, rc RetryConfig
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(make([]byte, scannerInitSize), scannerMaxSize)
 
+		/* collectedItems 累计中间事件里出现的图片（image_generation_call 等）item 原文，
+		 * 用于命中 response.completed 时合并到 response.output，避免上游把图片仅放在中间事件而丢失。 */
+		var collectedItems [][]byte
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if !bytes.HasPrefix(line, []byte("data:")) {
 				continue
 			}
 			jsonData := bytes.TrimSpace(line[5:])
-			if gjson.GetBytes(jsonData, "type").String() != "response.completed" {
+			evtType := gjson.GetBytes(jsonData, "type").String()
+			if evtType == "response.output_item.done" {
+				if it := gjson.GetBytes(jsonData, "item"); it.Exists() && isAggregatableOutputItem(it) {
+					itemCopy := make([]byte, len(it.Raw))
+					copy(itemCopy, it.Raw)
+					collectedItems = append(collectedItems, itemCopy)
+				}
+				continue
+			}
+			if evtType != "response.completed" {
 				continue
 			}
 			if resp := gjson.GetBytes(jsonData, "response"); resp.Exists() {
@@ -966,7 +1005,7 @@ func (e *Executor) ExecuteResponsesNonStream(ctx context.Context, rc RetryConfig
 				}
 				account.RecordSuccess()
 				log.Infof("req summary responses-nonstream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", baseModel, account.GetEmail(), attempts, convertDur, sendDur, time.Since(startTotal))
-				return []byte(resp.Raw), nil
+				return mergeAggregatedItemsIntoResponse([]byte(resp.Raw), collectedItems), nil
 			}
 		}
 
@@ -993,6 +1032,54 @@ func (e *Executor) ExecuteResponsesNonStream(ctx context.Context, rc RetryConfig
 		return nil, fmt.Errorf("未收到 response.completed 事件")
 	}
 	return nil, fmt.Errorf("读取响应失败")
+}
+
+/* isAggregatableOutputItem 判定一个 SSE 中间事件 response.output_item.done 的 item 是否需要在非流式聚合阶段补回 response.output。
+ * 当前仅图片生成项 image_generation_call（带 result）；其它 message/function_call 上游本身会写入 response.output，无需补。
+ */
+func isAggregatableOutputItem(item gjson.Result) bool {
+	if !item.Exists() {
+		return false
+	}
+	switch item.Get("type").String() {
+	case "image_generation_call":
+		return item.Get("result").String() != ""
+	}
+	return false
+}
+
+/* mergeAggregatedItemsIntoResponse 将中间事件收集到的 item 合并进 response.output（按 item.id 去重）。
+ * @param respJSON - response.completed 里的 response 原始 JSON 字节
+ * @param items - 中间事件收集到的 item 原始 JSON 列表
+ * @returns []byte - 合并后的响应 JSON
+ */
+func mergeAggregatedItemsIntoResponse(respJSON []byte, items [][]byte) []byte {
+	if len(items) == 0 {
+		return respJSON
+	}
+	existing := gjson.GetBytes(respJSON, "output")
+	if !existing.IsArray() {
+		respJSON, _ = sjson.SetRawBytes(respJSON, "output", []byte("[]"))
+	}
+	existingIDs := make(map[string]bool)
+	if existing.IsArray() {
+		for _, it := range existing.Array() {
+			if id := it.Get("id").String(); id != "" {
+				existingIDs[id] = true
+			}
+		}
+	}
+	for _, raw := range items {
+		id := gjson.GetBytes(raw, "id").String()
+		if id != "" && existingIDs[id] {
+			continue
+		}
+		respJSON, _ = sjson.SetRawBytes(respJSON, "output.-1", raw)
+		if id != "" {
+			existingIDs[id] = true
+		}
+	}
+	return respJSON
 }
 
 func (e *Executor) OpenResponsesStream(ctx context.Context, rc RetryConfig, requestBody []byte, model string) (*RawResponse, *auth.Account, int, string, time.Duration, time.Duration, error) {

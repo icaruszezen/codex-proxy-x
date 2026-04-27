@@ -29,3 +29,8 @@ CLIProxyAPIPlus/
 Thumbs.db
 .serena/project.yml
 codex-proxy
+test_image_model.py
+image_events.jsonl
+.gitignore
+image_model_response.json
+image_result.png

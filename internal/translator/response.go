@@ -342,7 +342,27 @@ func ConvertStreamChunk(_ context.Context, rawLine []byte, state *StreamState, r
 
 	case "response.output_item.done":
 		item := root.Get("item")
-		if !item.Exists() || item.Get("type").String() != "function_call" {
+		if !item.Exists() {
+			return nil
+		}
+		if item.Get("type").String() == "image_generation_call" {
+			/* 把最终图片以 Markdown data URL 形式作为一条 content chunk 推给客户端，
+			 * 兼容标准 Chat Completions 流式协议。 */
+			r := item.Get("result").String()
+			if r == "" {
+				return nil
+			}
+			ext := item.Get("output_format").String()
+			if ext == "" {
+				ext = "png"
+			}
+			md := "\n![image](data:image/" + ext + ";base64," + r + ")"
+			state.HasText = true
+			tpl, _ = sjson.Set(tpl, "choices.0.delta.role", "assistant")
+			tpl, _ = sjson.Set(tpl, "choices.0.delta.content", md)
+			return []string{tpl}
+		}
+		if item.Get("type").String() != "function_call" {
 			return nil
 		}
 		state.HasToolCall = true
@@ -550,6 +570,23 @@ func ConvertNonStreamResponse(rawJSON []byte, reverseToolMap map[string]string) 
 					fc, _ = sjson.Set(fc, "function.arguments", v.String())
 				}
 				toolCalls = append(toolCalls, fc)
+			case "image_generation_call":
+				/* 把图片生成结果以 Markdown data URL 形式追加到 message.content，
+				 * 兼容大多数前端（OpenWebUI 等）能直接渲染。 */
+				if r := item.Get("result").String(); r != "" {
+					ext := item.Get("output_format").String()
+					if ext == "" {
+						ext = "png"
+					}
+					if contentBuilder.Len() > 0 {
+						contentBuilder.WriteString("\n")
+					}
+					contentBuilder.WriteString("![image](data:image/")
+					contentBuilder.WriteString(ext)
+					contentBuilder.WriteString(";base64,")
+					contentBuilder.WriteString(r)
+					contentBuilder.WriteString(")")
+				}
 			}
 		}
 

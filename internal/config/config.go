@@ -121,6 +121,10 @@ type Config struct {
 	EnableModelSuffix1M bool `yaml:"enable-model-suffix-1m"`
 	/* EnableModelSuffixImage 控制是否允许模型名中的 -image 子参数，并同步影响 /v1/models 枚举 */
 	EnableModelSuffixImage bool `yaml:"enable-model-suffix-image"`
+	/* ResponsesStreamDropPartialImage 为 true 时，/v1/responses 流式转发会丢弃巨大的
+	 * response.image_generation_call.partial_image 中间帧，仅保留最终图片（output_item.done 的 result）。
+	 * 默认 true：partial_image 每帧约数 MB base64，仅是预览，多数客户端不需要；如需要预览动画可显式置 false。 */
+	ResponsesStreamDropPartialImage bool `yaml:"responses-stream-drop-partial-image"`
 
 	/* EnableWebSocket 控制 /v1/responses 是否接受 WebSocket 升级；false 时所有请求走 HTTP SSE */
 	EnableWebSocket bool `yaml:"enable-websocket"`
@@ -217,6 +221,7 @@ func LoadConfig(path string) (*Config, error) {
 		EnableModelSuffixFast:            true,
 		EnableModelSuffix1M:              true,
 		EnableModelSuffixImage:           true,
+		ResponsesStreamDropPartialImage:  true,
 		EnableWebSocket:                  true,
 		EnableListenH2C:                  true,
 		OAuthCallbackPort:                1455,
