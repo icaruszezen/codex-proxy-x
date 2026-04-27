@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.8.0...v1.9.0) (2026-04-27)
+
+
+### ✨ 新功能
+
+* add support for image generation response handling ([8fea398](https://github.com/icaruszezen/codex-proxy-x/commit/8fea39888f546d830de82345ae8a05c3dacc7655))
+
 ## [1.8.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.7.0...v1.8.0) (2026-04-24)
 
 
