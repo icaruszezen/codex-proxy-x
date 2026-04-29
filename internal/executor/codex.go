@@ -804,7 +804,7 @@ func (e *Executor) ExecuteNonStream(ctx context.Context, rc RetryConfig, request
 	startTotal := time.Now()
 	convertStart := time.Now()
 	body, baseModel, isImage := thinking.ApplyThinking(requestBody, model)
-	codexBody := translator.ConvertOpenAIRequestToCodex(baseModel, body, false, isImage)
+	codexBody := translator.ConvertOpenAIRequestToCodex(baseModel, body, true, isImage)
 	convertDur := time.Since(convertStart)
 	apiURL := e.baseURL + "/responses"
 	reverseToolMap := translator.BuildReverseToolNameMap(requestBody)
@@ -919,7 +919,7 @@ func (e *Executor) ExecuteResponsesNonStream(ctx context.Context, rc RetryConfig
 	startTotal := time.Now()
 	convertStart := time.Now()
 	body, baseModel, isImage := thinking.ApplyThinking(requestBody, model)
-	codexBody := translator.ConvertOpenAIRequestToCodex(baseModel, body, false, isImage)
+	codexBody := translator.ConvertOpenAIRequestToCodex(baseModel, body, true, isImage)
 	convertDur := time.Since(convertStart)
 	apiURL := e.baseURL + "/responses"
 
