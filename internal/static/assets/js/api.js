@@ -152,6 +152,58 @@ export async function requestAccountsIngest(cred, payload, signal) {
   };
 }
 
+export async function requestCodexAuthURL(cred, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/auth/codex/url"), {
+    method: "GET",
+    headers: buildHeaders(cred),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    url: String(data?.url || ""),
+    state: String(data?.state || ""),
+    expiresIn: Number(data?.expires_in ?? 0)
+  };
+}
+
+export async function requestCodexExchange(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = {};
+  const callbackUrl = String(payload?.callbackUrl || "").trim();
+  const code = String(payload?.code || "").trim();
+  const state = String(payload?.state || "").trim();
+  if (callbackUrl) body.callback_url = callbackUrl;
+  if (code) body.code = code;
+  if (state) body.state = state;
+  if (!body.callback_url && !body.code) {
+    throw new Error("请粘贴回调地址或填写 code");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/auth/codex/exchange"), {
+    method: "POST",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    status: String(data?.status || ""),
+    message: String(data?.message || ""),
+    email: String(data?.email || ""),
+    accountId: String(data?.account_id || "")
+  };
+}
+
 export async function requestRecoverAuth(cred, payload, signal) {
   if (!cred?.apiUrl) {
     throw new Error("请输入 API 地址");

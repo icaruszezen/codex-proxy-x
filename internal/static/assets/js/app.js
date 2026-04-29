@@ -1,15 +1,18 @@
 import { createImportsFeature } from "./imports.js";
+import { createCodexLoginFeature } from "./login.js";
 import { createStatsFeature } from "./stats.js";
 import { setLoading } from "./ui.js";
 
 const CRED_KEY = "stats_credentials_v1";
 const VIEW_STATS = "stats";
 const VIEW_IMPORT = "import";
+const VIEW_LOGIN = "login";
 
 const els = {
   pageSubtitle: document.getElementById("pageSubtitle"),
   statsViewBtn: document.getElementById("statsViewBtn"),
   importViewBtn: document.getElementById("importViewBtn"),
+  loginViewBtn: document.getElementById("loginViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   clearBtn: document.getElementById("clearBtn"),
   recoverAllBtn: document.getElementById("recoverAllBtn"),
@@ -17,6 +20,19 @@ const els = {
   cacheState: document.getElementById("cacheState"),
   statsView: document.getElementById("statsView"),
   importView: document.getElementById("importView"),
+  loginView: document.getElementById("loginView"),
+  loginGenerateBtn: document.getElementById("loginGenerateBtn"),
+  loginAuthUrl: document.getElementById("loginAuthUrl"),
+  loginUrlBlock: document.getElementById("loginUrlBlock"),
+  loginCopyUrlBtn: document.getElementById("loginCopyUrlBtn"),
+  loginOpenUrlBtn: document.getElementById("loginOpenUrlBtn"),
+  loginStateHint: document.getElementById("loginStateHint"),
+  loginGenerateState: document.getElementById("loginGenerateState"),
+  loginCallbackInput: document.getElementById("loginCallbackInput"),
+  loginExchangeBtn: document.getElementById("loginExchangeBtn"),
+  loginExchangeState: document.getElementById("loginExchangeState"),
+  backToStatsFromLoginBtn: document.getElementById("backToStatsFromLoginBtn"),
+  openSettingsFromLoginBtn: document.getElementById("openSettingsFromLoginBtn"),
   summaryCards: document.getElementById("summaryCards"),
   statsActionState: document.getElementById("statsActionState"),
   tableBody: document.getElementById("tableBody"),
@@ -133,29 +149,41 @@ function showLogin(show) {
 }
 
 function getViewFromHash() {
-  return window.location.hash.toLowerCase() === "#import" ? VIEW_IMPORT : VIEW_STATS;
+  const hash = window.location.hash.toLowerCase();
+  if (hash === "#import") return VIEW_IMPORT;
+  if (hash === "#login") return VIEW_LOGIN;
+  return VIEW_STATS;
 }
 
 function updateViewState() {
   const isImport = activeView === VIEW_IMPORT;
+  const isLogin = activeView === VIEW_LOGIN;
+  const isStats = !isImport && !isLogin;
   els.pageSubtitle.textContent = isImport
     ? "支持 JSON 对象、JSON 数组和 NDJSON 导入"
-    : "数据只在点击刷新时更新";
-  els.statsView.classList.toggle("hidden", isImport);
+    : isLogin
+      ? "通过 OpenAI OAuth 粘贴回调链接添加新账号"
+      : "数据只在点击刷新时更新";
+  els.statsView.classList.toggle("hidden", !isStats);
   els.importView.classList.toggle("hidden", !isImport);
-  els.statsViewBtn.classList.toggle("active", !isImport);
+  els.loginView.classList.toggle("hidden", !isLogin);
+  els.statsViewBtn.classList.toggle("active", isStats);
   els.importViewBtn.classList.toggle("active", isImport);
-  els.refreshBtn.classList.toggle("hidden", isImport);
-  els.clearBtn.classList.toggle("hidden", isImport);
-  els.recoverAllBtn.classList.toggle("hidden", isImport);
+  els.loginViewBtn.classList.toggle("active", isLogin);
+  els.refreshBtn.classList.toggle("hidden", !isStats);
+  els.clearBtn.classList.toggle("hidden", !isStats);
+  els.recoverAllBtn.classList.toggle("hidden", !isStats);
 }
 
 function setView(view, options = {}) {
   const { updateHash = true } = options;
-  activeView = view === VIEW_IMPORT ? VIEW_IMPORT : VIEW_STATS;
+  if (view === VIEW_IMPORT) activeView = VIEW_IMPORT;
+  else if (view === VIEW_LOGIN) activeView = VIEW_LOGIN;
+  else activeView = VIEW_STATS;
   updateViewState();
   if (updateHash) {
-    const targetHash = activeView === VIEW_IMPORT ? "#import" : "#stats";
+    const targetHash =
+      activeView === VIEW_IMPORT ? "#import" : activeView === VIEW_LOGIN ? "#login" : "#stats";
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash;
     }
@@ -175,6 +203,23 @@ const statsFeature = createStatsFeature({
   },
   onLoadingChange: isLoading => {
     setLoading(els.loadingOverlay, isLoading);
+  }
+});
+
+const loginFeature = createCodexLoginFeature({
+  els,
+  getCredentials,
+  onMissingCredentials: () => {
+    setLoginError("");
+    showLogin(true);
+  },
+  onCredentialError: message => {
+    setLoginError(message);
+    showLogin(true);
+  },
+  onStatsRefresh: async () => {
+    statsFeature.clearCache();
+    await statsFeature.fetchStats();
   }
 });
 
@@ -202,8 +247,18 @@ function bindGlobalEvents() {
   els.importViewBtn.addEventListener("click", () => {
     setView(VIEW_IMPORT);
   });
+  els.loginViewBtn.addEventListener("click", () => {
+    setView(VIEW_LOGIN);
+  });
   els.backToStatsBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
+  });
+  els.backToStatsFromLoginBtn.addEventListener("click", () => {
+    setView(VIEW_STATS);
+  });
+  els.openSettingsFromLoginBtn.addEventListener("click", () => {
+    setLoginError("");
+    showLogin(true);
   });
   els.resultToStatsBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
@@ -267,6 +322,7 @@ function bindGlobalEvents() {
 function init() {
   statsFeature.init();
   importsFeature.init();
+  loginFeature.init();
   bindGlobalEvents();
   setView(getViewFromHash(), { updateHash: false });
 }

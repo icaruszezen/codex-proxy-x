@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"codex-proxy/internal/auth"
@@ -48,6 +50,164 @@ func SetupLoginRoutes(r *router.Router, authDir string, callbackPort int, noBrow
 		}
 		writeJSON(ctx, fasthttp.StatusOK, map[string]string{"status": "success", "message": "device login successful"})
 	})
+	r.GET("/auth/codex/url", func(ctx *fasthttp.RequestCtx) {
+		resp, err := HandleCodexGetURL(callbackPort)
+		if err != nil {
+			writeJSON(ctx, fasthttp.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(ctx, fasthttp.StatusOK, resp)
+	})
+	r.POST("/auth/codex/exchange", func(ctx *fasthttp.RequestCtx) {
+		resp, err := HandleCodexExchange(authDir, ctx.Request.Body(), manager)
+		if err != nil {
+			writeJSON(ctx, fasthttp.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(ctx, fasthttp.StatusOK, resp)
+	})
+}
+
+/* ===== 粘贴回调登录：内存会话存储 ===== */
+
+const oauthSessionTTL = 10 * time.Minute
+
+type oauthSession struct {
+	PKCECodes   *codex.PKCECodes
+	RedirectURI string
+	CreatedAt   time.Time
+}
+
+var (
+	sessionMu    sync.Mutex
+	sessionStore = make(map[string]*oauthSession)
+)
+
+func storeOAuthSession(state string, sess *oauthSession) {
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	now := time.Now()
+	for k, v := range sessionStore {
+		if now.Sub(v.CreatedAt) > oauthSessionTTL {
+			delete(sessionStore, k)
+		}
+	}
+	sessionStore[state] = sess
+}
+
+func takeOAuthSession(state string) *oauthSession {
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	sess, ok := sessionStore[state]
+	if !ok {
+		return nil
+	}
+	delete(sessionStore, state)
+	if time.Since(sess.CreatedAt) > oauthSessionTTL {
+		return nil
+	}
+	return sess
+}
+
+// HandleCodexGetURL 生成 OAuth 授权链接和 state，由用户复制到浏览器登录
+func HandleCodexGetURL(callbackPort int) (map[string]any, error) {
+	pkceCodes, err := codex.GeneratePKCECodes()
+	if err != nil {
+		return nil, fmt.Errorf("生成 PKCE 码失败: %w", err)
+	}
+	state, err := generateRandomState()
+	if err != nil {
+		return nil, fmt.Errorf("生成 state 失败: %w", err)
+	}
+
+	redirectURI := codex.BuildRedirectURI(callbackPort)
+	authClient := codex.NewCodexAuth()
+	authURL, err := authClient.GenerateAuthURL(state, redirectURI, pkceCodes)
+	if err != nil {
+		return nil, fmt.Errorf("生成授权 URL 失败: %w", err)
+	}
+
+	storeOAuthSession(state, &oauthSession{
+		PKCECodes:   pkceCodes,
+		RedirectURI: redirectURI,
+		CreatedAt:   time.Now(),
+	})
+
+	return map[string]any{
+		"url":        authURL,
+		"state":      state,
+		"expires_in": int(oauthSessionTTL.Seconds()),
+	}, nil
+}
+
+// HandleCodexExchange 接受用户粘贴的回调地址（或 code+state），换取 token 并保存凭据
+func HandleCodexExchange(authDir string, body []byte, manager *auth.Manager) (map[string]any, error) {
+	var req struct {
+		CallbackURL string `json:"callback_url"`
+		Code        string `json:"code"`
+		State       string `json:"state"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, fmt.Errorf("解析请求体失败: %w", err)
+		}
+	}
+
+	code := strings.TrimSpace(req.Code)
+	state := strings.TrimSpace(req.State)
+
+	if cb := strings.TrimSpace(req.CallbackURL); cb != "" {
+		parsed, err := url.Parse(cb)
+		if err != nil {
+			return nil, fmt.Errorf("解析回调 URL 失败: %w", err)
+		}
+		q := parsed.Query()
+		if errParam := q.Get("error"); errParam != "" {
+			desc := q.Get("error_description")
+			if desc != "" {
+				return nil, fmt.Errorf("OAuth 错误: %s (%s)", errParam, desc)
+			}
+			return nil, fmt.Errorf("OAuth 错误: %s", errParam)
+		}
+		if code == "" {
+			code = q.Get("code")
+		}
+		if state == "" {
+			state = q.Get("state")
+		}
+	}
+
+	if code == "" {
+		return nil, fmt.Errorf("缺少 code 参数")
+	}
+	if state == "" {
+		return nil, fmt.Errorf("缺少 state 参数")
+	}
+
+	sess := takeOAuthSession(state)
+	if sess == nil {
+		return nil, fmt.Errorf("state 无效或已过期，请重新获取登录链接")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	authClient := codex.NewCodexAuth()
+	bundle, err := authClient.ExchangeCodeForTokensWithRedirect(ctx, code, sess.RedirectURI, sess.PKCECodes)
+	if err != nil {
+		return nil, fmt.Errorf("交换令牌失败: %w", err)
+	}
+
+	if err := saveCodexAuthBundle(authDir, bundle, manager); err != nil {
+		return nil, fmt.Errorf("保存凭据失败: %w", err)
+	}
+
+	return map[string]any{
+		"status":     "success",
+		"message":    "login successful",
+		"email":      bundle.TokenData.Email,
+		"account_id": bundle.TokenData.AccountID,
+	}, nil
 }
 
 // HandleCodexLogin 执行标准 OAuth 回调登录流程

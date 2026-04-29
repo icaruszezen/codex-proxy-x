@@ -16,6 +16,7 @@
       <div class="actions">
         <button id="statsViewBtn" class="ghost active">查看统计</button>
         <button id="importViewBtn" class="secondary">账号导入</button>
+        <button id="loginViewBtn" class="secondary">账号登录</button>
         <button id="refreshBtn">刷新数据</button>
         <button id="clearBtn" class="secondary">清空缓存</button>
         <button id="recoverAllBtn" class="ghost">批量 401 恢复</button>
@@ -184,6 +185,56 @@
             <h4>错误明细</h4>
             <ul id="importErrorsList" class="error-list"></ul>
           </div>
+        </div>
+      </section>
+
+      <section id="loginView" class="view hidden">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>账号登录（OAuth 粘贴回调）</h2>
+              <p class="panel-note">远程部署无法回调本地 1455 端口时，可使用此流程：先在后端生成授权链接，登录后把浏览器地址栏中的回调 URL 粘回，由后端用 PKCE 直接换取 Token 并加入号池。</p>
+            </div>
+            <div class="hero-actions">
+              <button id="backToStatsFromLoginBtn" class="ghost">返回统计</button>
+              <button id="openSettingsFromLoginBtn" class="ghost">设置接口</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>第 1 步：生成授权链接</h3>
+              <p class="panel-note">点击下方按钮，由后端生成带 PKCE 的 OpenAI 登录链接，链接 10 分钟内有效。</p>
+            </div>
+            <div class="hero-actions">
+              <button id="loginGenerateBtn">生成登录链接</button>
+            </div>
+          </div>
+          <div id="loginUrlBlock" class="login-url-block hidden">
+            <div class="login-url-row">
+              <input id="loginAuthUrl" type="text" readonly />
+              <button id="loginCopyUrlBtn" class="secondary" type="button">复制</button>
+              <button id="loginOpenUrlBtn" class="ghost" type="button">在新窗口打开</button>
+            </div>
+            <p class="muted login-state-hint" id="loginStateHint"></p>
+          </div>
+          <div id="loginGenerateState" class="alert-stack"></div>
+        </div>
+
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>第 2 步：粘贴回调地址</h3>
+              <p class="panel-note">登录完成后，浏览器会跳转到形如 <code>http://localhost:1455/auth/callback?code=...&amp;state=...</code> 的地址（即使页面打不开也没关系，把整段地址从地址栏复制下来粘贴到这里即可）。</p>
+            </div>
+            <div class="hero-actions">
+              <button id="loginExchangeBtn">提交并换取凭证</button>
+            </div>
+          </div>
+          <textarea id="loginCallbackInput" placeholder="粘贴形如 http://localhost:1455/auth/callback?code=...&amp;state=... 的回调地址"></textarea>
+          <div id="loginExchangeState" class="alert-stack"></div>
         </div>
       </section>
     </main>
