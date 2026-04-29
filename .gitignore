@@ -17,6 +17,8 @@ app
 # 参考项目
 CLIProxyAPIPlus/
 
+*_test.go
+
 # IDE
 .idea/
 .vscode/
