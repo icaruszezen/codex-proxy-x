@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.9.0...v1.10.0) (2026-04-29)
+
+
+### ✨ 新功能
+
+* **auth:** implement account enable/disable functionality ([932681c](https://github.com/icaruszezen/codex-proxy-x/commit/932681c3c4e40d7426d12b318f25f4b33006fcd4))
+
 ## [1.9.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.8.0...v1.9.0) (2026-04-27)
 
 
