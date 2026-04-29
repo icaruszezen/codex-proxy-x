@@ -49,12 +49,14 @@ type TokenFile struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	/* RK 与 refresh_token 等价；JSON 中 null 与省略 unmarsh 后均为空串 */
-	RK          string `json:"rk"`
-	AccountID   string `json:"account_id"`
-	LastRefresh string `json:"last_refresh"`
-	Email       string `json:"email"`
-	Type        string `json:"type"`
-	Expire      string `json:"expired"`
+	RK            string `json:"rk"`
+	AccountID     string `json:"account_id"`
+	LastRefresh   string `json:"last_refresh"`
+	Email         string `json:"email"`
+	Type          string `json:"type"`
+	Expire        string `json:"expired"`
+	Disabled      bool   `json:"disabled,omitempty"`
+	DisableReason string `json:"disable_reason,omitempty"`
 }
 
 /**
@@ -146,6 +148,8 @@ const (
 	ReasonRefresh429 = "refresh_http_429"
 	/* ReasonQuotaHTTP429 额度查询接口返回 HTTP 429 */
 	ReasonQuotaHTTP429 = "quota_http_429"
+	/* ReasonManualDisabled 管理端手动停用 */
+	ReasonManualDisabled = "manual_disabled"
 	/* ReasonQuotaInvalidAfterRefresh OAuth 刷新成功但 wham/usage 返回无效（非 200 且非 429），视为废号 */
 	ReasonQuotaInvalidAfterRefresh = "quota_invalid_after_refresh"
 	/* ReasonRestoreProbeFailed 周期性「禁用凭据恢复」探测中 OAuth/额度不通过，已删除凭据文件 */
@@ -320,6 +324,7 @@ func (a *Account) UpdateToken(td TokenData) {
 	now := time.Now()
 	a.mu.Lock()
 	prev := a.Token
+	manualDisabled := a.Status == StatusDisabled && a.DisableReason == ReasonManualDisabled
 	if td.RefreshToken == "" {
 		td.RefreshToken = prev.RefreshToken
 	}
@@ -340,12 +345,18 @@ func (a *Account) UpdateToken(td TokenData) {
 	}
 	a.Token = td
 	a.LastRefreshedAt = now
-	a.Status = StatusActive
 	a.LastError = nil
+	if !manualDisabled {
+		a.Status = StatusActive
+	}
 	a.mu.Unlock()
 
 	/* 同步更新原子状态 */
-	a.atomicStatus.Store(int32(StatusActive))
+	if manualDisabled {
+		a.atomicStatus.Store(int32(StatusDisabled))
+	} else {
+		a.atomicStatus.Store(int32(StatusActive))
+	}
 	a.lastRefreshMs.Store(now.UnixMilli())
 	a.accessExpireUnixMs.Store(expMs)
 }
@@ -449,6 +460,28 @@ func (a *Account) SetDisabledWithReason(err error, reason string) {
 	a.mu.Unlock()
 
 	a.atomicStatus.Store(int32(StatusDisabled))
+}
+
+/* IsManuallyDisabled 判断账号是否为手动停用状态 */
+func (a *Account) IsManuallyDisabled() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.Status == StatusDisabled && a.DisableReason == ReasonManualDisabled
+}
+
+/* SetManualDisabled 将账号标记为手动停用（可持久化） */
+func (a *Account) SetManualDisabled() {
+	a.mu.Lock()
+	a.Status = StatusDisabled
+	a.LastError = nil
+	a.DisableReason = ReasonManualDisabled
+	a.CooldownUntil = time.Time{}
+	a.QuotaExhausted = false
+	a.QuotaResetsAt = time.Time{}
+	a.mu.Unlock()
+
+	a.atomicStatus.Store(int32(StatusDisabled))
+	a.atomicCooldownMs.Store(0)
 }
 
 /**

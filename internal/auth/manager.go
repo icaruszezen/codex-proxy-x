@@ -671,6 +671,15 @@ func accountFromTokenFile(tf *TokenFile, logicalPath string) (*Account, error) {
 		},
 		Status: StatusActive,
 	}
+	if tf.Disabled {
+		reason := strings.TrimSpace(tf.DisableReason)
+		if reason == "" {
+			reason = ReasonManualDisabled
+		}
+		acc.Status = StatusDisabled
+		acc.DisableReason = reason
+		acc.atomicStatus.Store(int32(StatusDisabled))
+	}
 	acc.SyncAccessExpireFromToken()
 	return acc, nil
 }
@@ -2027,6 +2036,9 @@ func (m *Manager) ForceRefreshAllStream(ctx context.Context, quotaChecker *Quota
 		log.Infof("开始手动强制刷新 %d 个账号（并发 %d）", total, m.refreshConcurrency)
 
 		for _, acc := range accounts {
+			if acc.IsManuallyDisabled() {
+				continue
+			}
 			acc.SetActive()
 			if m.db != nil {
 				m.enqueueSave(acc)
@@ -2189,6 +2201,26 @@ func (m *Manager) FindAccountByIdentifier(email, filePath string) *Account {
 }
 
 /**
+ * SetAccountEnabled 按邮箱或文件路径切换账号启用状态（手动停用可持久化）
+ */
+func (m *Manager) SetAccountEnabled(email, filePath string, enabled bool) (*Account, error) {
+	acc := m.FindAccountByIdentifier(email, filePath)
+	if acc == nil {
+		return nil, fmt.Errorf("未找到账号")
+	}
+	if enabled {
+		acc.SetActive()
+	} else {
+		acc.SetManualDisabled()
+	}
+	m.InvalidateSelectorCache()
+	if err := m.saveTokenToFile(acc); err != nil {
+		return nil, err
+	}
+	return acc, nil
+}
+
+/**
  * RecoverAuth401 对指定账号执行 401 恢复：同步刷新 → 若 429 则查额度（qc 非空）→ 仍失败则禁用凭据文件
  * 同一凭据文件上并发的 RecoverAuth401 会合并为单次 OAuth（singleflight），避免多连接重复刷新刷屏。
  * ctx 为外层上限；单次 OAuth 另受 refresh-single-timeout-sec 约束（非对话 API）
@@ -2306,7 +2338,9 @@ func (m *Manager) recoverAuth401Once(ctx context.Context, acc *Account, qc *Quot
 			log.Errorf("账号 [%s] 401 刷新成功但持久化失败: %v", acc.GetEmail(), err)
 			out.Detail = "persist error: " + err.Error()
 		}
-		acc.SetActive()
+		if !acc.IsManuallyDisabled() {
+			acc.SetActive()
+		}
 		m.enqueueSave(acc)
 		m.InvalidateSelectorCache()
 		log.Infof("账号 [%s] 401 后刷新成功，已恢复可用", acc.GetEmail())
@@ -2330,7 +2364,9 @@ func (m *Manager) recoverAuth401Once(ctx context.Context, acc *Account, qc *Quot
 			}
 			return out
 		}
-		acc.SetActive()
+		if !acc.IsManuallyDisabled() {
+			acc.SetActive()
+		}
 		m.InvalidateSelectorCache()
 		out.Status = Auth401RecoverRefreshed
 		return out
@@ -2470,7 +2506,9 @@ func (m *Manager) ScheduleUpstream429Recovery(_ context.Context, acc *Account, q
 			v2, st2 := qc.CheckAccountResultWithStatus(qctx2, acc)
 			cancel2()
 			if v2 == 1 {
-				acc.SetActive()
+				if !acc.IsManuallyDisabled() {
+					acc.SetActive()
+				}
 				if m.db != nil {
 					m.enqueueSave(acc)
 				}
@@ -2553,6 +2591,7 @@ func (m *Manager) saveTokenToFile(acc *Account) error {
 		return m.saveTokenToDB(acc)
 	}
 	acc.mu.RLock()
+	manualDisabled := acc.Status == StatusDisabled && acc.DisableReason == ReasonManualDisabled
 	tf := TokenFile{
 		IDToken:      acc.Token.IDToken,
 		AccessToken:  acc.Token.AccessToken,
@@ -2562,6 +2601,13 @@ func (m *Manager) saveTokenToFile(acc *Account) error {
 		Email:        acc.Token.Email,
 		Type:         "codex",
 		Expire:       acc.Token.Expire,
+		Disabled:     manualDisabled,
+		DisableReason: func() string {
+			if manualDisabled {
+				return ReasonManualDisabled
+			}
+			return ""
+		}(),
 	}
 	filePath := acc.FilePath
 	acc.mu.RUnlock()

@@ -1,4 +1,4 @@
-import { isCredentialError, requestRecoverAuth, requestStatsPage } from "./api.js";
+import { isCredentialError, requestAccountToggleEnabled, requestRecoverAuth, requestStatsPage } from "./api.js";
 import { buildAlert, escapeHtml, formatDate, formatNumber } from "./ui.js";
 
 const CACHE_KEY = "stats_cache_v2";
@@ -152,13 +152,15 @@ export function createStatsFeature({
     currentRows: [],
     currentPage: 1,
     pageSize: Number(els.pageSize.value),
+    statusFilter: String(els.statusFilter?.value || "all").toLowerCase(),
     pagination: null,
     memoryOnlyCache: false,
     searchTimer: 0,
     fetchController: null,
     initialized: false,
     recoveringEmails: new Set(),
-    isRecoveringAll: false
+    isRecoveringAll: false,
+    togglingEmails: new Set()
   };
 
   function safeGetCacheRaw() {
@@ -222,7 +224,8 @@ export function createStatsFeature({
 
   function updateRecoverAllButton() {
     const hasSingleRecover = state.recoveringEmails.size > 0;
-    els.recoverAllBtn.disabled = state.isRecoveringAll || hasSingleRecover;
+    const hasTogglePending = state.togglingEmails.size > 0;
+    els.recoverAllBtn.disabled = state.isRecoveringAll || hasSingleRecover || hasTogglePending;
     els.recoverAllBtn.textContent = state.isRecoveringAll ? "批量恢复中..." : "批量 401 恢复";
   }
 
@@ -276,6 +279,30 @@ export function createStatsFeature({
     `;
   }
 
+  function buildEnabledToggle(row) {
+    const safeEmail = String(row?.email || "").trim();
+    if (!safeEmail) {
+      return "";
+    }
+    const isEnabled = String(row?.status || "") !== "disabled";
+    const isBusy = state.isRecoveringAll
+      || state.recoveringEmails.has(safeEmail)
+      || state.togglingEmails.has(safeEmail);
+    return `
+      <label class="enabled-toggle-wrap">
+        <input
+          type="checkbox"
+          class="enabled-toggle"
+          data-action="toggle-enabled"
+          data-email="${encodeURIComponent(safeEmail)}"
+          ${isEnabled ? "checked" : ""}
+          ${isBusy ? "disabled" : ""}
+        />
+        <span>${isEnabled ? "启用" : "停用"}</span>
+      </label>
+    `;
+  }
+
   function renderTable(rows, pageMeta) {
     state.currentRows = rows || [];
     state.pagination = pageMeta || null;
@@ -295,6 +322,7 @@ export function createStatsFeature({
         ? `
           <div class="account-cell">
             <span class="account-email">${escapeHtml(email)}</span>
+            ${buildEnabledToggle(row)}
             ${buildRecoverAction(email)}
           </div>
         `
@@ -359,7 +387,8 @@ export function createStatsFeature({
       page: state.currentPage,
       pageSize: state.pageSize,
       includeQuota: false,
-      query: els.searchInput.value.trim()
+      query: els.searchInput.value.trim(),
+      status: state.statusFilter
     }, signal);
   }
 
@@ -412,8 +441,39 @@ export function createStatsFeature({
     }
   }
 
+  async function handleToggleEnabled(email, enabled) {
+    const safeEmail = String(email || "").trim();
+    if (!safeEmail || state.isRecoveringAll || state.recoveringEmails.has(safeEmail) || state.togglingEmails.has(safeEmail)) {
+      return;
+    }
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials();
+      return;
+    }
+    state.togglingEmails.add(safeEmail);
+    renderTable(state.currentRows, state.pagination);
+    try {
+      const response = await requestAccountToggleEnabled(cred, { email: safeEmail, enabled: Boolean(enabled) });
+      setActionState(buildAlert(
+        "success",
+        `账号 ${response.email || safeEmail} 已${response.enabled ? "启用" : "停用"}`,
+        escapeHtml(response.disableReason ? `原因：${response.disableReason}` : "状态已更新。")
+      ));
+      await refreshAfterRecover({ showLoading: false });
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+      handleRecoverError(`账号 ${safeEmail} 状态切换失败`, error);
+    } finally {
+      state.togglingEmails.delete(safeEmail);
+      renderTable(state.currentRows, state.pagination);
+    }
+  }
+
   async function handleRecoverAll() {
-    if (state.isRecoveringAll || state.recoveringEmails.size > 0) {
+    if (state.isRecoveringAll || state.recoveringEmails.size > 0 || state.togglingEmails.size > 0) {
       return;
     }
     const confirmed = window.confirm("批量 401 恢复会顺序请求后端处理当前账号池中的全部账号，账号较多时可能耗时较长。确定继续吗？");
@@ -530,6 +590,11 @@ export function createStatsFeature({
         void fetchStats();
       }, 250);
     });
+    els.statusFilter.addEventListener("change", () => {
+      state.statusFilter = String(els.statusFilter.value || "all").toLowerCase();
+      state.currentPage = 1;
+      void fetchStats();
+    });
     els.tableBody.addEventListener("click", event => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
@@ -541,6 +606,18 @@ export function createStatsFeature({
       }
       const email = button.dataset.email ? decodeURIComponent(button.dataset.email) : "";
       void handleRecoverByEmail(email);
+    });
+    els.tableBody.addEventListener("change", event => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const input = target.closest("[data-action='toggle-enabled']");
+      if (!(input instanceof HTMLInputElement)) {
+        return;
+      }
+      const email = input.dataset.email ? decodeURIComponent(input.dataset.email) : "";
+      void handleToggleEnabled(email, input.checked);
     });
   }
 

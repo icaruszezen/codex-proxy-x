@@ -44,6 +44,7 @@ const els = {
   updatedAt: document.getElementById("updatedAt"),
   cacheNote: document.getElementById("cacheNote"),
   searchInput: document.getElementById("searchInput"),
+  statusFilter: document.getElementById("statusFilter"),
   placeholder: document.getElementById("placeholder"),
   loadingOverlay: document.getElementById("loadingOverlay"),
   loginOverlay: document.getElementById("loginOverlay"),

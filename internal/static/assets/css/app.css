@@ -331,6 +331,21 @@ tr:hover td {
   background: #fffaf0;
 }
 
+.enabled-toggle-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
+}
+
+.enabled-toggle {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-2);
+}
+
 .pagination {
   display: flex;
   gap: 8px;

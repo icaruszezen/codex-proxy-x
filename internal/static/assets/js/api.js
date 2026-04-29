@@ -30,11 +30,13 @@ export function buildEndpointUrl(apiUrl, endpointPath, params = {}) {
 
 export function buildStatsUrl(apiUrl, options = {}) {
   const query = String(options.query ?? "").trim();
+  const status = String(options.status ?? "all").trim().toLowerCase();
   return buildEndpointUrl(apiUrl, "/stats", {
     page: Number(options.page ?? 1) || 1,
     page_size: Number(options.pageSize ?? 25) || 25,
     include_quota: options.includeQuota ? 1 : 0,
-    q: query || undefined
+    q: query || undefined,
+    status: status === "all" ? undefined : status
   });
 }
 
@@ -73,6 +75,7 @@ export function normalizeStatsResponse(data, options = {}) {
   const targetPage = Math.max(1, Number(options.page ?? 1) || 1);
   const targetPageSize = Math.max(1, Number(options.pageSize ?? 25) || 25);
   const keyword = String(options.query ?? "").trim().toLowerCase();
+  const statusFilter = String(options.status ?? "all").trim().toLowerCase();
   if (data?.pagination) {
     return {
       ...data,
@@ -86,9 +89,19 @@ export function normalizeStatsResponse(data, options = {}) {
     };
   }
   const allRows = Array.isArray(data?.accounts) ? data.accounts : [];
-  const filteredRows = keyword
-    ? allRows.filter(row => String(row?.email || "").toLowerCase().includes(keyword))
-    : allRows;
+  const filteredRows = allRows.filter(row => {
+    const status = String(row?.status || "").toLowerCase();
+    if (statusFilter === "enabled" && status === "disabled") {
+      return false;
+    }
+    if (statusFilter === "disabled" && status !== "disabled") {
+      return false;
+    }
+    if (keyword && !String(row?.email || "").toLowerCase().includes(keyword)) {
+      return false;
+    }
+    return true;
+  });
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / targetPageSize));
   const safePage = Math.min(Math.max(1, targetPage), totalPages);
   const start = (safePage - 1) * targetPageSize;
@@ -232,5 +245,43 @@ export async function requestRecoverAuth(cred, payload, signal) {
     results: Array.isArray(data?.results) ? data.results : [],
     count: Number(data?.count ?? 0),
     durationMs: Number(data?.duration_ms ?? data?.durationMs ?? 0)
+  };
+}
+
+export async function requestAccountToggleEnabled(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = {
+    enabled: Boolean(payload?.enabled)
+  };
+  const email = String(payload?.email || "").trim();
+  const filePath = String(payload?.filePath || payload?.file_path || "").trim();
+  if (email) {
+    body.email = email;
+  }
+  if (filePath) {
+    body.file_path = filePath;
+  }
+  if (!body.email && !body.file_path) {
+    throw new Error("缺少可切换状态的账号标识");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/accounts/toggle-enabled"), {
+    method: "POST",
+    headers: buildHeaders(cred, {
+      "Content-Type": "application/json"
+    }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    email: String(data?.email || body.email || ""),
+    enabled: Boolean(data?.enabled),
+    status: String(data?.status || ""),
+    disableReason: String(data?.disable_reason || "")
   };
 }

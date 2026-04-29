@@ -204,11 +204,14 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	r.POST("/recover-auth", recoverAuthHandler)
 
 	accountsIngestHandler := h.handleAccountsIngest
+	accountsToggleEnabledHandler := h.handleAccountToggleEnabled
 	if len(h.apiKeys) > 0 {
 		accountsIngestHandler = h.authMiddleware(h.handleAccountsIngest)
+		accountsToggleEnabledHandler = h.authMiddleware(h.handleAccountToggleEnabled)
 	}
 	r.POST("/admin/accounts/ingest", accountsIngestHandler)
 	r.GET("/admin/accounts/ingest", accountsIngestHandler)
+	r.POST("/admin/accounts/toggle-enabled", accountsToggleEnabledHandler)
 }
 
 /**
@@ -672,9 +675,12 @@ func (h *ProxyHandler) handleChatCompletions(ctx *fasthttp.RequestCtx) {
  */
 func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 	args := ctx.QueryArgs()
-	pageMode := len(args.Peek("page")) > 0 || len(args.Peek("page_size")) > 0 || len(args.Peek("q")) > 0 || len(args.Peek("include_quota")) > 0
+	pageMode := len(args.Peek("page")) > 0 || len(args.Peek("page_size")) > 0 || len(args.Peek("q")) > 0 || len(args.Peek("include_quota")) > 0 || len(args.Peek("status")) > 0
 	query := strings.ToLower(strings.TrimSpace(string(args.Peek("q"))))
 	includeQuota := queryBoolArg(args, "include_quota")
+	statusFilter := strings.ToLower(strings.TrimSpace(string(args.Peek("status"))))
+	statusFilterEnabled := statusFilter == "enabled"
+	statusFilterDisabled := statusFilter == "disabled"
 	accounts := h.manager.GetAccounts()
 	active, cooldown, disabled := 0, 0, 0
 	var totalInputTokens, totalOutputTokens int64
@@ -683,7 +689,6 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 		stats := make([]auth.AccountStats, 0, len(accounts))
 		for _, acc := range accounts {
 			s := acc.GetStats()
-			stats = append(stats, s)
 			totalInputTokens += s.Usage.InputTokens
 			totalOutputTokens += s.Usage.OutputTokens
 			switch s.Status {
@@ -694,6 +699,16 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 			case "disabled":
 				disabled++
 			}
+			if statusFilterEnabled && s.Status == "disabled" {
+				continue
+			}
+			if statusFilterDisabled && s.Status != "disabled" {
+				continue
+			}
+			if query != "" && !strings.Contains(strings.ToLower(s.Email), query) {
+				continue
+			}
+			stats = append(stats, s)
 		}
 
 		writeJSON(ctx, fasthttp.StatusOK, map[string]any{
@@ -729,6 +744,12 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 			cooldown++
 		case "disabled":
 			disabled++
+		}
+		if statusFilterEnabled && s.Status == "disabled" {
+			continue
+		}
+		if statusFilterDisabled && s.Status != "disabled" {
+			continue
 		}
 
 		if query != "" && !strings.Contains(strings.ToLower(s.Email), query) {
@@ -861,6 +882,61 @@ func (h *ProxyHandler) handleRecoverAuth(ctx *fasthttp.RequestCtx) {
 		"object":      "auth401_recover_result",
 		"result":      r,
 		"duration_ms": time.Since(start).Milliseconds(),
+	})
+}
+
+/**
+ * handleAccountToggleEnabled POST /admin/accounts/toggle-enabled
+ * 快速切换单个账号启用状态（手动停用可持久化）
+ * 请求体 JSON：{ "email":"...", "enabled":true/false } 或 { "file_path":"...", "enabled":true/false }
+ */
+func (h *ProxyHandler) handleAccountToggleEnabled(ctx *fasthttp.RequestCtx) {
+	body := ctx.PostBody()
+	if len(body) == 0 {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "请求体不能为空", "type": "invalid_request_error"},
+		})
+		return
+	}
+	var req struct {
+		Email    string `json:"email"`
+		FilePath string `json:"file_path"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "JSON 解析失败", "type": "invalid_request_error"},
+		})
+		return
+	}
+	if req.Enabled == nil {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "缺少 enabled 字段", "type": "invalid_request_error"},
+		})
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	filePath := strings.TrimSpace(req.FilePath)
+	if email == "" && filePath == "" {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "请提供 email 或 file_path", "type": "invalid_request_error"},
+		})
+		return
+	}
+
+	acc, err := h.manager.SetAccountEnabled(email, filePath, *req.Enabled)
+	if err != nil {
+		writeJSON(ctx, fasthttp.StatusNotFound, map[string]any{
+			"error": map[string]any{"message": err.Error(), "type": "invalid_request_error"},
+		})
+		return
+	}
+	stats := acc.GetStats()
+	writeJSON(ctx, fasthttp.StatusOK, map[string]any{
+		"email":          stats.Email,
+		"enabled":        stats.Status != "disabled",
+		"status":         stats.Status,
+		"disable_reason": stats.DisableReason,
 	})
 }
 
