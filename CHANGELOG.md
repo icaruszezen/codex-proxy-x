@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.10.0...v1.10.1) (2026-05-01)
+
+
+### 🐛 错误修复
+
+* stream ([7cb6ae2](https://github.com/icaruszezen/codex-proxy-x/commit/7cb6ae2bb7533e57d136b1148717d380e271f385))
+* 非流502 ([9183c20](https://github.com/icaruszezen/codex-proxy-x/commit/9183c206fba63f729c2958d736382c7f2034e6f5))
+
 ## [1.10.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.9.0...v1.10.0) (2026-04-29)
 
 
