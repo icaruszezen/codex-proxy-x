@@ -32,10 +32,11 @@ import (
 
 /* 与 executor 一致的缓冲与扫描器大小，便于统一调优 */
 const (
-	wsBufferSize     = 32 * 1024
-	scannerInitSize  = 4 * 1024
-	scannerMaxSize   = 50 * 1024 * 1024
-	statsMaxPageSize = 200
+	wsBufferSize       = 32 * 1024
+	scannerInitSize    = 4 * 1024
+	scannerMaxSize     = 50 * 1024 * 1024
+	statsMaxPageSize   = 200
+	statsMaxEventLimit = 100
 )
 
 type statsPagination struct {
@@ -678,10 +679,12 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 	pageMode := len(args.Peek("page")) > 0 || len(args.Peek("page_size")) > 0 || len(args.Peek("q")) > 0 || len(args.Peek("include_quota")) > 0 || len(args.Peek("status")) > 0
 	query := strings.ToLower(strings.TrimSpace(string(args.Peek("q"))))
 	includeQuota := queryBoolArg(args, "include_quota")
+	eventsLimit := parsePositiveIntArg(args, "events_limit", 20, statsMaxEventLimit)
 	statusFilter := strings.ToLower(strings.TrimSpace(string(args.Peek("status"))))
 	statusFilterEnabled := statusFilter == "enabled"
 	statusFilterDisabled := statusFilter == "disabled"
 	accounts := h.manager.GetAccounts()
+	recentEvents := h.manager.RecentAccountEvents(eventsLimit)
 	active, cooldown, disabled := 0, 0, 0
 	var totalInputTokens, totalOutputTokens int64
 
@@ -721,7 +724,8 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 				"total_input_tokens":  totalInputTokens,
 				"total_output_tokens": totalOutputTokens,
 			},
-			"accounts": stats,
+			"accounts":      stats,
+			"recent_events": recentEvents,
 		})
 		return
 	}
@@ -782,7 +786,8 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 			"total_input_tokens":  totalInputTokens,
 			"total_output_tokens": totalOutputTokens,
 		},
-		"accounts": stats,
+		"accounts":      stats,
+		"recent_events": recentEvents,
 		"pagination": statsPagination{
 			Page:          page,
 			PageSize:      pageSize,

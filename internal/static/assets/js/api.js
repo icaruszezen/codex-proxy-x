@@ -76,11 +76,13 @@ export function normalizeStatsResponse(data, options = {}) {
   const targetPageSize = Math.max(1, Number(options.pageSize ?? 25) || 25);
   const keyword = String(options.query ?? "").trim().toLowerCase();
   const statusFilter = String(options.status ?? "all").trim().toLowerCase();
+  const recentEvents = Array.isArray(data?.recent_events) ? data.recent_events : [];
   if (data?.pagination) {
     return {
       ...data,
       summary: data.summary || {},
       accounts: Array.isArray(data.accounts) ? data.accounts : [],
+      recent_events: recentEvents,
       pagination: {
         ...data.pagination,
         page: Number(data.pagination.page ?? targetPage) || targetPage,
@@ -109,6 +111,7 @@ export function normalizeStatsResponse(data, options = {}) {
   return {
     summary: data?.summary || {},
     accounts: pageRows,
+    recent_events: recentEvents,
     pagination: {
       page: safePage,
       page_size: targetPageSize,

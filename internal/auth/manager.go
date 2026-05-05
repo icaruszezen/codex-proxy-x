@@ -79,6 +79,7 @@ type Manager struct {
 	accounts                []*Account
 	accountIndex            map[string]*Account
 	accountsPtr             atomic.Pointer[[]*Account] /* 原子快照，Pick 热路径零锁读取 */
+	eventLog                *accountEventLog
 	refresher               *Refresher
 	selector                Selector
 	authDir                 string
@@ -128,6 +129,7 @@ func NewManager(authDir string, db *sql.DB, proxyURL string, refreshInterval int
 		db:                      db,
 		accounts:                make([]*Account, 0, 1024),
 		accountIndex:            make(map[string]*Account, 1024),
+		eventLog:                newAccountEventLog(authDir),
 		refresher:               NewRefresher(proxyURL, enableHTTP2),
 		selector:                selector,
 		authDir:                 authDir,
@@ -1233,6 +1235,43 @@ func (m *Manager) InvalidateSelectorCache() {
 	}
 }
 
+func (m *Manager) recordAutoAccountEvent(action AccountEventAction, acc *Account, reason, detail string) {
+	if m == nil || m.eventLog == nil || acc == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" || reason == ReasonManualDisabled {
+		return
+	}
+	email := strings.TrimSpace(acc.GetEmail())
+	storageMode := "file"
+	if m.db != nil {
+		storageMode = "db"
+	}
+	if err := m.eventLog.Append(AccountEvent{
+		Timestamp:   time.Now().UTC(),
+		Action:      action,
+		Email:       email,
+		ReasonCode:  reason,
+		Detail:      strings.TrimSpace(detail),
+		StorageMode: storageMode,
+	}); err != nil {
+		log.Errorf("账号 [%s] 自动事件记录失败: action=%s reason=%s err=%v", email, action, reason, err)
+	}
+}
+
+func (m *Manager) RecentAccountEvents(limit int) []AccountEvent {
+	if m == nil || m.eventLog == nil {
+		return []AccountEvent{}
+	}
+	events, err := m.eventLog.ReadRecent(limit)
+	if err != nil {
+		log.Errorf("读取账号自动事件记录失败: %v", err)
+		return []AccountEvent{}
+	}
+	return events
+}
+
 /**
  * RemoveAccount 从号池和磁盘同时删除异常账号
  * 内存中移除 + 删除磁盘上的 JSON 文件，彻底清理
@@ -1274,12 +1313,14 @@ func (m *Manager) RemoveAccount(acc *Account, reason string) {
 			log.Errorf("账号 [%s] 数据库删除失败: %v", email, err)
 		} else {
 			log.Warnf("账号 [%s] 已删除（内存+数据库），原因: %s，剩余 %d 个", email, reason, remaining)
+			m.recordAutoAccountEvent(AccountEventActionRemove, acc, reason, "内存+数据库删除")
 		}
 	} else {
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 			log.Errorf("账号 [%s] 磁盘文件删除失败: %v", email, err)
 		} else {
 			log.Warnf("账号 [%s] 已删除（内存+磁盘），原因: %s，剩余 %d 个", email, reason, remaining)
+			m.recordAutoAccountEvent(AccountEventActionRemove, acc, reason, "内存+磁盘删除")
 		}
 	}
 }
@@ -1317,6 +1358,7 @@ func (m *Manager) DisableAccountByRenamingFile(acc *Account, reason string) {
 			log.Errorf("账号 [%s] 禁用（数据库删除）失败: %v", email, err)
 		} else {
 			log.Warnf("账号 [%s] 已从号池移除（数据库），原因: %s，剩余 %d 个", email, reason, remaining)
+			m.recordAutoAccountEvent(AccountEventActionDisable, acc, reason, "数据库模式移出号池")
 		}
 		return
 	}
@@ -1326,6 +1368,9 @@ func (m *Manager) DisableAccountByRenamingFile(acc *Account, reason string) {
 		log.Errorf("账号 [%s] 生成禁用文件名失败: %v，改为删除原文件", email, err)
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 			log.Errorf("账号 [%s] 删除凭据文件失败: %v", email, err)
+		} else {
+			log.Warnf("账号 [%s] 禁用回退为删除原文件，原因: %s，剩余 %d 个", email, reason, remaining)
+			m.recordAutoAccountEvent(AccountEventActionDisable, acc, reason, "禁用文件名生成失败，已删除原文件")
 		}
 		return
 	}
@@ -1333,10 +1378,14 @@ func (m *Manager) DisableAccountByRenamingFile(acc *Account, reason string) {
 		log.Errorf("账号 [%s] 禁用重命名失败: %v，尝试删除", email, err)
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 			log.Errorf("账号 [%s] 删除凭据文件失败: %v", email, err)
+		} else {
+			log.Warnf("账号 [%s] 禁用重命名失败，已删除原文件，原因: %s，剩余 %d 个", email, reason, remaining)
+			m.recordAutoAccountEvent(AccountEventActionDisable, acc, reason, "禁用重命名失败，已删除原文件")
 		}
 		return
 	}
 	log.Warnf("账号 [%s] 已禁用: %s -> %s，原因: %s，剩余 %d 个", email, filePath, dest, reason, remaining)
+	m.recordAutoAccountEvent(AccountEventActionDisable, acc, reason, "凭据文件已重命名为 disabled")
 }
 
 func nextDisabledRenamePath(filePath string) (string, error) {

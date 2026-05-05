@@ -306,6 +306,80 @@ tr:hover td {
   margin-top: -8px;
 }
 
+.recent-events-panel {
+  gap: 14px;
+}
+
+.event-list {
+  display: grid;
+  gap: 12px;
+}
+
+.event-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 1px solid #f0e7d7;
+  border-radius: 16px;
+  background: #fffdf7;
+}
+
+.event-item-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.event-item-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.event-action {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.event-action.remove {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+.event-action.disable {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.event-email {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.event-reason,
+.event-meta {
+  color: var(--muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.event-reason {
+  color: var(--ink);
+}
+
+.event-time {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .account-cell {
   display: flex;
   align-items: center;
@@ -715,6 +789,14 @@ tr:hover td {
   .account-cell {
     align-items: flex-start;
     gap: 6px;
+  }
+
+  .event-item {
+    grid-template-columns: 1fr;
+  }
+
+  .event-time {
+    white-space: normal;
   }
 
   .row-action {

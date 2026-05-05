@@ -140,6 +140,52 @@ function buildBulkRecoverAlert(response) {
   );
 }
 
+const EVENT_REASON_LABELS = {
+  auth_401: "健康检查返回 401，已自动停用",
+  auth_401_no_refresh_token: "401 且缺少 refresh_token，已自动删除",
+  auth_401_disabled: "401 恢复失败，已自动停用",
+  refresh_failed: "刷新失败，已自动删除",
+  health_check_failed: "健康检查失败",
+  quota_recheck_failed: "429 恢复复核失败，已自动删除",
+  quota_invalid_after_refresh: "刷新后额度校验无效，已自动删除",
+  restore_probe_failed: "禁用凭据恢复探测失败，已自动删除",
+  refresh_http_429: "刷新接口返回 429",
+  quota_http_429: "额度接口返回 429",
+  empty_access_token: "access_token 为空，已自动删除",
+  missing_refresh_token: "refresh_token 为空，已自动删除"
+};
+
+function formatEventActionLabel(action) {
+  return String(action || "") === "remove" ? "自动删除" : "自动停用";
+}
+
+function formatEventActionClass(action) {
+  return String(action || "") === "remove" ? "remove" : "disable";
+}
+
+function formatEventReason(reasonCode) {
+  const key = String(reasonCode || "").trim();
+  if (!key) {
+    return "原因未记录";
+  }
+  return EVENT_REASON_LABELS[key] || key;
+}
+
+function formatEventMeta(event) {
+  const parts = [];
+  const storageMode = String(event?.storage_mode || "").trim().toLowerCase();
+  if (storageMode === "db") {
+    parts.push("数据库模式");
+  } else if (storageMode === "file") {
+    parts.push("文件模式");
+  }
+  const detail = String(event?.detail || "").trim();
+  if (detail) {
+    parts.push(detail);
+  }
+  return parts.join("；");
+}
+
 export function createStatsFeature({
   els,
   getCredentials,
@@ -262,6 +308,42 @@ export function createStatsFeature({
     `).join("");
   }
 
+  function renderRecentEvents(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (els.recentEventsCount) {
+      els.recentEventsCount.textContent = `最近 ${formatNumber(rows.length)} 条`;
+    }
+    if (!els.recentEventsList || !els.recentEventsEmpty) {
+      return;
+    }
+    if (!rows.length) {
+      els.recentEventsList.innerHTML = "";
+      els.recentEventsEmpty.classList.remove("hidden");
+      return;
+    }
+    els.recentEventsEmpty.classList.add("hidden");
+    els.recentEventsList.innerHTML = rows.map(event => {
+      const email = String(event?.email || "").trim() || "未知账号";
+      const actionLabel = formatEventActionLabel(event?.action);
+      const actionClass = formatEventActionClass(event?.action);
+      const reasonText = formatEventReason(event?.reason_code);
+      const metaText = formatEventMeta(event);
+      return `
+        <article class="event-item">
+          <div class="event-item-main">
+            <div class="event-item-heading">
+              <span class="event-action ${actionClass}">${escapeHtml(actionLabel)}</span>
+              <strong class="event-email">${escapeHtml(email)}</strong>
+            </div>
+            <div class="event-reason">${escapeHtml(reasonText)}</div>
+            ${metaText ? `<div class="event-meta">${escapeHtml(metaText)}</div>` : ""}
+          </div>
+          <time class="event-time">${escapeHtml(formatDate(event?.timestamp))}</time>
+        </article>
+      `;
+    }).join("");
+  }
+
   function buildRecoverAction(email) {
     const safeEmail = String(email || "").trim();
     if (!safeEmail) {
@@ -358,6 +440,7 @@ export function createStatsFeature({
     els.placeholder.style.display = show ? "grid" : "none";
     if (show) {
       els.summaryCards.innerHTML = "";
+      renderRecentEvents([]);
       els.tableBody.innerHTML = "";
       els.rowsInfo.textContent = "0 条记录";
       els.pageInfo.textContent = "1 / 1";
@@ -371,6 +454,7 @@ export function createStatsFeature({
 
   function render(data) {
     renderSummary(data.summary, data.accounts || []);
+    renderRecentEvents(data.recent_events || []);
     renderTable(data.accounts || [], data.pagination || null);
     showPlaceholder(false);
     updateCacheBadge();
