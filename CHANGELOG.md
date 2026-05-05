@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.10.1...v1.11.0) (2026-05-05)
+
+
+### ✨ 新功能
+
+* 修复特定情况下的换号逻辑错误问题 ([622d08d](https://github.com/icaruszezen/codex-proxy-x/commit/622d08d31b740488c953f968f755551b02b1c3be))
+
 ## [1.10.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.10.0...v1.10.1) (2026-05-01)
 
 
