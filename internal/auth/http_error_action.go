@@ -42,4 +42,5 @@ const (
 	QuotaApplyCooldown
 	QuotaApplyRemoved
 	QuotaApplyDisabled
+	QuotaApplyRefreshDisabled
 )

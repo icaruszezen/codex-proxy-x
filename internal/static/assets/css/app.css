@@ -303,6 +303,12 @@ tr:hover td {
   color: #475569;
 }
 
+.status.refresh-disabled {
+  margin-left: 6px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
 .stats-action-state {
   margin-top: -8px;
 }
@@ -365,6 +371,11 @@ tr:hover td {
 .event-action.disable {
   background: #e2e8f0;
   color: #475569;
+}
+
+.event-action.refresh-disable {
+  background: var(--warn-bg);
+  color: var(--warn-text);
 }
 
 .event-email {

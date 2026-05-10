@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS codex_accounts (
 	cooldown_until DATETIME(6) NULL,
 	disable_reason VARCHAR(128),
 	last_used_at DATETIME(6) NULL,
+	refresh_disabled TINYINT(1) DEFAULT 0,
+	refresh_disabled_reason VARCHAR(128),
 	updated_at DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
 	UNIQUE KEY uk_codex_accounts_account_id (account_id),
 	UNIQUE KEY uk_codex_accounts_email (email)
@@ -52,6 +54,8 @@ CREATE TABLE IF NOT EXISTS codex_accounts (
 	cooldown_until TEXT,
 	disable_reason TEXT,
 	last_used_at TEXT,
+	refresh_disabled INTEGER DEFAULT 0,
+	refresh_disabled_reason TEXT,
 	updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 )`
 	default:
@@ -70,6 +74,8 @@ CREATE TABLE IF NOT EXISTS codex_accounts (
 	cooldown_until TIMESTAMPTZ,
 	disable_reason TEXT,
 	last_used_at TIMESTAMPTZ,
+	refresh_disabled BOOLEAN DEFAULT FALSE,
+	refresh_disabled_reason TEXT,
 	updated_at TIMESTAMPTZ DEFAULT NOW()
 ) WITH (fillfactor=90)`
 	}
@@ -90,21 +96,21 @@ CREATE TABLE IF NOT EXISTS codex_accounts (
 func migrateAddStatusColumns(db *sql.DB, d Dialect) error {
 	switch d {
 	case DialectMySQL:
-		newCols := []string{"status", "cooldown_until", "disable_reason", "last_used_at"}
+		newCols := []string{"status", "cooldown_until", "disable_reason", "last_used_at", "refresh_disabled", "refresh_disabled_reason"}
 		for _, col := range newCols {
 			if err := addColumnIfNotExists(db, d, col); err != nil {
 				return fmt.Errorf("add column %s: %w", col, err)
 			}
 		}
 	case DialectSQLite:
-		newCols := []string{"status", "cooldown_until", "disable_reason", "last_used_at"}
+		newCols := []string{"status", "cooldown_until", "disable_reason", "last_used_at", "refresh_disabled", "refresh_disabled_reason"}
 		for _, col := range newCols {
 			if err := addColumnIfNotExists(db, d, col); err != nil {
 				return fmt.Errorf("add column %s: %w", col, err)
 			}
 		}
 	default: /* PostgreSQL */
-		newCols := []string{"status", "cooldown_until", "disable_reason", "last_used_at"}
+		newCols := []string{"status", "cooldown_until", "disable_reason", "last_used_at", "refresh_disabled", "refresh_disabled_reason"}
 		for _, col := range newCols {
 			if err := addColumnIfNotExists(db, d, col); err != nil {
 				return fmt.Errorf("add column %s: %w", col, err)
@@ -146,6 +152,17 @@ func addColumnIfNotExists(db *sql.DB, d Dialect, colName string) error {
 		default: /* PostgreSQL */
 			colDef = "TIMESTAMPTZ"
 		}
+	case "refresh_disabled":
+		switch d {
+		case DialectMySQL:
+			colDef = "TINYINT(1) DEFAULT 0"
+		case DialectSQLite:
+			colDef = "INTEGER DEFAULT 0"
+		default: /* PostgreSQL */
+			colDef = "BOOLEAN DEFAULT FALSE"
+		}
+	case "refresh_disabled_reason":
+		colDef = "VARCHAR(128)"
 	}
 
 	switch d {

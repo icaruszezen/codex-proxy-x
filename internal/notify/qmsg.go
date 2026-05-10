@@ -282,6 +282,8 @@ func RenderQmsgMessage(template string, event AccountEvent) string {
 		actionLabel = "删除"
 	case "disable":
 		actionLabel = "停用"
+	case "refresh_disable":
+		actionLabel = "禁用刷新"
 	}
 	timestamp := event.Timestamp
 	if timestamp.IsZero() {

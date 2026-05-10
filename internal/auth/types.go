@@ -49,14 +49,16 @@ type TokenFile struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	/* RK 与 refresh_token 等价；JSON 中 null 与省略 unmarsh 后均为空串 */
-	RK            string `json:"rk"`
-	AccountID     string `json:"account_id"`
-	LastRefresh   string `json:"last_refresh"`
-	Email         string `json:"email"`
-	Type          string `json:"type"`
-	Expire        string `json:"expired"`
-	Disabled      bool   `json:"disabled,omitempty"`
-	DisableReason string `json:"disable_reason,omitempty"`
+	RK                    string `json:"rk"`
+	AccountID             string `json:"account_id"`
+	LastRefresh           string `json:"last_refresh"`
+	Email                 string `json:"email"`
+	Type                  string `json:"type"`
+	Expire                string `json:"expired"`
+	Disabled              bool   `json:"disabled,omitempty"`
+	DisableReason         string `json:"disable_reason,omitempty"`
+	RefreshDisabled       bool   `json:"refresh_disabled,omitempty"`
+	RefreshDisabledReason string `json:"refresh_disabled_reason,omitempty"`
 }
 
 /**
@@ -76,27 +78,29 @@ type TokenFile struct {
  * @field DisableReason - 禁用原因编码
  */
 type Account struct {
-	mu                  sync.RWMutex
-	FilePath            string
-	Token               TokenData
-	Status              AccountStatus
-	LastError           error
-	LastRefreshedAt     time.Time
-	NextRetryAfter      time.Time
-	CooldownUntil       time.Time
-	ConsecutiveFailures int
-	LastUsedAt          time.Time
-	TotalRequests       atomic.Int64
-	TotalErrors         atomic.Int64
-	DisableReason       string
-	QuotaResetsAt       time.Time
-	QuotaExhausted      bool
-	TotalInputTokens    atomic.Int64
-	TotalOutputTokens   atomic.Int64
-	TotalTokens         atomic.Int64
-	TotalCompletions    atomic.Int64
-	QuotaInfo           *QuotaInfo
-	QuotaCheckedAt      time.Time
+	mu                    sync.RWMutex
+	FilePath              string
+	Token                 TokenData
+	Status                AccountStatus
+	LastError             error
+	LastRefreshedAt       time.Time
+	NextRetryAfter        time.Time
+	CooldownUntil         time.Time
+	ConsecutiveFailures   int
+	LastUsedAt            time.Time
+	TotalRequests         atomic.Int64
+	TotalErrors           atomic.Int64
+	DisableReason         string
+	RefreshDisabled       bool
+	RefreshDisabledReason string
+	QuotaResetsAt         time.Time
+	QuotaExhausted        bool
+	TotalInputTokens      atomic.Int64
+	TotalOutputTokens     atomic.Int64
+	TotalTokens           atomic.Int64
+	TotalCompletions      atomic.Int64
+	QuotaInfo             *QuotaInfo
+	QuotaCheckedAt        time.Time
 
 	/* 原子状态字段（热路径无锁读取） */
 	atomicStatus     atomic.Int32 /* 存储 AccountStatus 枚举值 */
@@ -138,12 +142,15 @@ const (
 	/* ReasonAuth401NoRefreshToken 上游 401 且无 refresh_token，已从号池删除 */
 	ReasonAuth401NoRefreshToken = "auth_401_no_refresh_token"
 	/* ReasonAuth401Disabled 上游 401 且刷新/额度复核均失败，凭据文件已重命名禁用 */
-	ReasonAuth401Disabled    = "auth_401_disabled"
-	ReasonAuth403            = "auth_403"
-	ReasonQuotaExhausted     = "quota_exhausted"
-	ReasonRefreshFailed      = "refresh_failed"
-	ReasonHealthCheck        = "health_check_failed"
-	ReasonQuotaRecheckFailed = "quota_recheck_failed"
+	ReasonAuth401Disabled = "auth_401_disabled"
+	ReasonAuth403         = "auth_403"
+	ReasonQuotaExhausted  = "quota_exhausted"
+	/* ReasonRefreshFailed 通用刷新失败，已从号池删除 */
+	ReasonRefreshFailed = "refresh_failed"
+	/* ReasonRefreshPermanentFailed OAuth refresh 凭据永久失效，AccessToken 有效期内仅禁用刷新 */
+	ReasonRefreshPermanentFailed = "refresh_permanent_failed"
+	ReasonHealthCheck            = "health_check_failed"
+	ReasonQuotaRecheckFailed     = "quota_recheck_failed"
 	/* ReasonRefresh429 token 刷新接口返回 HTTP 429 */
 	ReasonRefresh429 = "refresh_http_429"
 	/* ReasonQuotaHTTP429 额度查询接口返回 HTTP 429 */
@@ -188,8 +195,9 @@ type Auth401RecoverResult struct {
 type AccountEventAction string
 
 const (
-	AccountEventActionRemove  AccountEventAction = "remove"
-	AccountEventActionDisable AccountEventAction = "disable"
+	AccountEventActionRemove         AccountEventAction = "remove"
+	AccountEventActionDisable        AccountEventAction = "disable"
+	AccountEventActionRefreshDisable AccountEventAction = "refresh_disable"
 )
 
 /* AccountEvent 表示自动删除/停用账号的持久化事件记录 */
@@ -214,21 +222,23 @@ type AccountEvent struct {
  * @field CooldownUntil - 冷却结束时间
  */
 type AccountStats struct {
-	Email               string     `json:"email"`
-	Status              string     `json:"status"`
-	PlanType            string     `json:"plan_type,omitempty"`
-	DisableReason       string     `json:"disable_reason,omitempty"`
-	TotalRequests       int64      `json:"total_requests"`
-	TotalErrors         int64      `json:"total_errors"`
-	ConsecutiveFailures int        `json:"consecutive_failures"`
-	LastUsedAt          time.Time  `json:"last_used_at,omitempty"`
-	LastRefreshedAt     time.Time  `json:"last_refreshed_at,omitempty"`
-	CooldownUntil       time.Time  `json:"cooldown_until,omitempty"`
-	QuotaExhausted      bool       `json:"quota_exhausted"`
-	QuotaResetsAt       time.Time  `json:"quota_resets_at,omitempty"`
-	TokenExpire         string     `json:"token_expire,omitempty"`
-	Usage               UsageStats `json:"usage"`
-	Quota               *QuotaInfo `json:"quota,omitempty"`
+	Email                 string     `json:"email"`
+	Status                string     `json:"status"`
+	PlanType              string     `json:"plan_type,omitempty"`
+	DisableReason         string     `json:"disable_reason,omitempty"`
+	TotalRequests         int64      `json:"total_requests"`
+	TotalErrors           int64      `json:"total_errors"`
+	ConsecutiveFailures   int        `json:"consecutive_failures"`
+	LastUsedAt            time.Time  `json:"last_used_at,omitempty"`
+	LastRefreshedAt       time.Time  `json:"last_refreshed_at,omitempty"`
+	CooldownUntil         time.Time  `json:"cooldown_until,omitempty"`
+	QuotaExhausted        bool       `json:"quota_exhausted"`
+	QuotaResetsAt         time.Time  `json:"quota_resets_at,omitempty"`
+	TokenExpire           string     `json:"token_expire,omitempty"`
+	RefreshDisabled       bool       `json:"refresh_disabled"`
+	RefreshDisabledReason string     `json:"refresh_disabled_reason,omitempty"`
+	Usage                 UsageStats `json:"usage"`
+	Quota                 *QuotaInfo `json:"quota,omitempty"`
 }
 
 /**
@@ -298,6 +308,66 @@ func (a *Account) HasRefreshToken() bool {
 	return strings.TrimSpace(a.Token.RefreshToken) != ""
 }
 
+func (a *Account) IsRefreshDisabled() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.RefreshDisabled
+}
+
+func (a *Account) SetRefreshDisabled(reason string, err error) {
+	if reason == "" {
+		reason = ReasonRefreshPermanentFailed
+	}
+	a.mu.Lock()
+	a.RefreshDisabled = true
+	a.RefreshDisabledReason = reason
+	a.LastError = err
+	if a.Status != StatusDisabled {
+		a.Status = StatusActive
+		a.CooldownUntil = time.Time{}
+	}
+	a.mu.Unlock()
+
+	if AccountStatus(a.atomicStatus.Load()) != StatusDisabled {
+		a.atomicStatus.Store(int32(StatusActive))
+		a.atomicCooldownMs.Store(0)
+	}
+}
+
+func (a *Account) ClearRefreshDisabled() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.RefreshDisabled = false
+	a.RefreshDisabledReason = ""
+	a.mu.Unlock()
+}
+
+func (a *Account) AccessTokenUsableNow() bool {
+	if a == nil || strings.TrimSpace(a.GetAccessToken()) == "" {
+		return false
+	}
+	expMs := a.accessExpireUnixMs.Load()
+	if expMs == 0 {
+		a.mu.RLock()
+		expire := a.Token.Expire
+		a.mu.RUnlock()
+		if strings.TrimSpace(expire) == "" {
+			return true
+		}
+		t, err := time.Parse(time.RFC3339, expire)
+		if err != nil {
+			return true
+		}
+		expMs = t.UnixMilli()
+	}
+	return time.Now().UnixMilli() < expMs-pickAvoidTokenExpireMarginMs
+}
+
 /**
  * GetAccountID 安全获取当前的 AccountID
  * @returns string - 当前 AccountID
@@ -365,10 +435,13 @@ func (a *Account) UpdateToken(td TokenData) {
 		}
 	}
 	a.Token = td
+	a.RefreshDisabled = false
+	a.RefreshDisabledReason = ""
 	a.LastRefreshedAt = now
 	a.LastError = nil
 	if !manualDisabled {
 		a.Status = StatusActive
+		a.DisableReason = ReasonNone
 	}
 	a.mu.Unlock()
 
@@ -398,11 +471,11 @@ func (a *Account) IsTokenExpiringSoon() bool {
 			return false /* 无过期信息，不阻止 */
 		}
 		if t, err := time.Parse(time.RFC3339, expire); err == nil {
-			return time.Until(t) < 5*time.Minute
+			return time.Now().UnixMilli() >= t.UnixMilli()-pickAvoidTokenExpireMarginMs
 		}
 		return false
 	}
-	return time.Now().UnixMilli() >= expMs-int64(5*60*1000)
+	return time.Now().UnixMilli() >= expMs-pickAvoidTokenExpireMarginMs
 }
 
 /**
@@ -514,6 +587,8 @@ func (a *Account) SetActive() {
 	a.LastError = nil
 	a.ConsecutiveFailures = 0
 	a.DisableReason = ReasonNone
+	a.RefreshDisabled = false
+	a.RefreshDisabledReason = ""
 	a.QuotaExhausted = false
 	a.QuotaResetsAt = time.Time{}
 	a.mu.Unlock()
@@ -636,19 +711,21 @@ func (a *Account) GetStats() AccountStats {
 	}
 
 	return AccountStats{
-		Email:               a.Token.Email,
-		Status:              statusStr,
-		PlanType:            a.Token.PlanType,
-		DisableReason:       a.DisableReason,
-		TotalRequests:       a.TotalRequests.Load(),
-		TotalErrors:         a.TotalErrors.Load(),
-		ConsecutiveFailures: a.ConsecutiveFailures,
-		LastUsedAt:          a.LastUsedAt,
-		LastRefreshedAt:     a.LastRefreshedAt,
-		CooldownUntil:       a.CooldownUntil,
-		QuotaExhausted:      quotaExhausted,
-		QuotaResetsAt:       quotaResetsAt,
-		TokenExpire:         a.Token.Expire,
+		Email:                 a.Token.Email,
+		Status:                statusStr,
+		PlanType:              a.Token.PlanType,
+		DisableReason:         a.DisableReason,
+		RefreshDisabled:       a.RefreshDisabled,
+		RefreshDisabledReason: a.RefreshDisabledReason,
+		TotalRequests:         a.TotalRequests.Load(),
+		TotalErrors:           a.TotalErrors.Load(),
+		ConsecutiveFailures:   a.ConsecutiveFailures,
+		LastUsedAt:            a.LastUsedAt,
+		LastRefreshedAt:       a.LastRefreshedAt,
+		CooldownUntil:         a.CooldownUntil,
+		QuotaExhausted:        quotaExhausted,
+		QuotaResetsAt:         quotaResetsAt,
+		TokenExpire:           a.Token.Expire,
 		Usage: UsageStats{
 			TotalCompletions: a.TotalCompletions.Load(),
 			InputTokens:      a.TotalInputTokens.Load(),

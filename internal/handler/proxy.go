@@ -392,7 +392,7 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		},
 		On401Fn: func(acc *auth.Account) bool {
 			/* 先换号让当前请求立即继续；对 401 账号在后台提交 OAuth+额度恢复（异步，不阻塞） */
-			if acc == nil {
+			if acc == nil || acc.IsRefreshDisabled() {
 				return false
 			}
 			if h.canPerformAuth401Recover(acc) {
@@ -426,6 +426,9 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 	}
 	if h.quotaPrecheck && h.quotaChecker != nil {
 		rc.QuotaCheckFn = func(ctx context.Context, acc *auth.Account) bool {
+			if acc != nil && acc.IsRefreshDisabled() {
+				return true
+			}
 			if acc != nil && !acc.HasRefreshToken() {
 				return true
 			}
@@ -696,6 +699,7 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 	accounts := h.manager.GetAccounts()
 	recentEvents := h.manager.RecentAccountEvents(eventsLimit)
 	active, cooldown, disabled := 0, 0, 0
+	refreshDisabledCount := 0
 	var totalInputTokens, totalOutputTokens int64
 
 	if !pageMode {
@@ -704,6 +708,9 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 			s := acc.GetStats()
 			totalInputTokens += s.Usage.InputTokens
 			totalOutputTokens += s.Usage.OutputTokens
+			if s.RefreshDisabled {
+				refreshDisabledCount++
+			}
 			switch s.Status {
 			case "active":
 				active++
@@ -730,6 +737,7 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 				"active":              active,
 				"cooldown":            cooldown,
 				"disabled":            disabled,
+				"refresh_disabled":    refreshDisabledCount,
 				"rpm":                 GetRPM(),
 				"total_input_tokens":  totalInputTokens,
 				"total_output_tokens": totalOutputTokens,
@@ -751,6 +759,9 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 		s := acc.GetStats()
 		totalInputTokens += s.Usage.InputTokens
 		totalOutputTokens += s.Usage.OutputTokens
+		if s.RefreshDisabled {
+			refreshDisabledCount++
+		}
 		switch s.Status {
 		case "active":
 			active++
@@ -792,6 +803,7 @@ func (h *ProxyHandler) handleStats(ctx *fasthttp.RequestCtx) {
 			"active":              active,
 			"cooldown":            cooldown,
 			"disabled":            disabled,
+			"refresh_disabled":    refreshDisabledCount,
 			"rpm":                 GetRPM(),
 			"total_input_tokens":  totalInputTokens,
 			"total_output_tokens": totalOutputTokens,

@@ -145,6 +145,7 @@ const EVENT_REASON_LABELS = {
   auth_401_no_refresh_token: "401 且缺少 refresh_token，已自动删除",
   auth_401_disabled: "401 恢复失败，已自动停用",
   refresh_failed: "刷新失败，已自动删除",
+  refresh_permanent_failed: "refresh 凭据永久失效，AccessToken 有效期内继续使用",
   health_check_failed: "健康检查失败",
   quota_recheck_failed: "429 恢复复核失败，已自动删除",
   quota_invalid_after_refresh: "刷新后额度校验无效，已自动删除",
@@ -156,11 +157,25 @@ const EVENT_REASON_LABELS = {
 };
 
 function formatEventActionLabel(action) {
-  return String(action || "") === "remove" ? "自动删除" : "自动停用";
+  const code = String(action || "");
+  if (code === "remove") {
+    return "自动删除";
+  }
+  if (code === "refresh_disable") {
+    return "禁用刷新";
+  }
+  return "自动停用";
 }
 
 function formatEventActionClass(action) {
-  return String(action || "") === "remove" ? "remove" : "disable";
+  const code = String(action || "");
+  if (code === "remove") {
+    return "remove";
+  }
+  if (code === "refresh_disable") {
+    return "refresh-disable";
+  }
+  return "disable";
 }
 
 function formatEventReason(reasonCode) {
@@ -296,6 +311,7 @@ export function createStatsFeature({
       { label: "活跃", value: safe.active ?? 0 },
       { label: "冷却中", value: safe.cooldown ?? 0 },
       { label: "禁用", value: safe.disabled ?? 0 },
+      { label: "不可刷新", value: safe.refresh_disabled ?? 0 },
       { label: "RPM", value: safe.rpm ?? 0 },
       { label: "总输入 Token", value: safe.total_input_tokens ?? 0 },
       { label: "总输出 Token", value: safe.total_output_tokens ?? 0 }
@@ -399,6 +415,10 @@ export function createStatsFeature({
       const tr = document.createElement("tr");
       const usage = row.usage || {};
       const statusClass = ["active", "cooldown", "disabled"].includes(row.status) ? row.status : "disabled";
+      const refreshDisabledReason = String(row.refresh_disabled_reason || "").trim();
+      const refreshDisabledBadge = row.refresh_disabled
+        ? ` <span class="status refresh-disabled" title="${escapeHtml(refreshDisabledReason || "refresh 凭据不可用")}">不可刷新</span>`
+        : "";
       const email = String(row.email || "").trim();
       const emailCell = email
         ? `
@@ -411,7 +431,7 @@ export function createStatsFeature({
         : "<span class=\"muted\">--</span>";
       tr.innerHTML = `
         <td>${emailCell}</td>
-        <td><span class="status ${statusClass}">${escapeHtml(row.status || "--")}</span></td>
+        <td><span class="status ${statusClass}">${escapeHtml(row.status || "--")}</span>${refreshDisabledBadge}</td>
         <td>${escapeHtml(row.plan_type || "--")}</td>
         <td>${formatNumber(row.total_requests)}</td>
         <td>${formatNumber(row.total_errors)}</td>

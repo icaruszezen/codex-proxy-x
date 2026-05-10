@@ -231,6 +231,9 @@ func (m *Manager) EnsureTokenFresh(ctx context.Context, acc *Account) bool {
 	if acc == nil {
 		return false
 	}
+	if acc.IsRefreshDisabled() {
+		return acc.AccessTokenUsableNow()
+	}
 	if !acc.IsTokenExpiringSoon() {
 		return true
 	}
@@ -242,7 +245,7 @@ func (m *Manager) EnsureTokenFresh(ctx context.Context, acc *Account) bool {
 	if !acc.refreshing.CompareAndSwap(0, 1) {
 		/* 他处已在刷新，短等待完成 */
 		m.waitAccountRefreshIdle(ctx, acc)
-		return acc.IsAvailable()
+		return acc.IsAvailable() && (!acc.IsRefreshDisabled() || acc.AccessTokenUsableNow())
 	}
 	defer acc.refreshing.Store(0)
 
@@ -257,6 +260,13 @@ func (m *Manager) EnsureTokenFresh(ctx context.Context, acc *Account) bool {
 	defer rcancel()
 	td, err := m.refresher.RefreshTokenWithRetry(rctx, rt, 2)
 	if err != nil {
+		if IsPermanentOAuthRefreshFailure(err) {
+			if m.markRefreshDisabledIfAccessUsable(acc, email, err) {
+				return true
+			}
+			m.RemoveAccount(acc, ReasonRefreshFailed)
+			return false
+		}
 		log.Warnf("账号 [%s] 内联刷新失败: %v，仍尝试上游请求", email, err)
 		return true /* 不阻止，让上游 401 触发换号 */
 	}
@@ -275,8 +285,8 @@ func (m *Manager) prepareDBStatements() error {
 	switch m.dbDialect {
 	case codexdb.DialectMySQL:
 		s := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
 ON DUPLICATE KEY UPDATE
 	email = VALUES(email),
 	account_id = VALUES(account_id),
@@ -290,6 +300,8 @@ ON DUPLICATE KEY UPDATE
 	cooldown_until = VALUES(cooldown_until),
 	disable_reason = VALUES(disable_reason),
 	last_used_at = VALUES(last_used_at),
+	refresh_disabled = VALUES(refresh_disabled),
+	refresh_disabled_reason = VALUES(refresh_disabled_reason),
 	updated_at = VALUES(updated_at)`
 		stmt, err := m.db.Prepare(s)
 		if err != nil {
@@ -300,8 +312,8 @@ ON DUPLICATE KEY UPDATE
 		return nil
 	case codexdb.DialectSQLite:
 		s1 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(account_id) DO UPDATE SET
 	email = excluded.email,
 	id_token = excluded.id_token,
@@ -314,6 +326,8 @@ ON CONFLICT(account_id) DO UPDATE SET
 	cooldown_until = excluded.cooldown_until,
 	disable_reason = excluded.disable_reason,
 	last_used_at = excluded.last_used_at,
+	refresh_disabled = excluded.refresh_disabled,
+	refresh_disabled_reason = excluded.refresh_disabled_reason,
 	updated_at = CURRENT_TIMESTAMP`
 		stmt, err := m.db.Prepare(s1)
 		if err != nil {
@@ -321,8 +335,8 @@ ON CONFLICT(account_id) DO UPDATE SET
 		}
 		m.saveTokenStmt = stmt
 		s2 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(email) DO UPDATE SET
 	account_id = excluded.account_id,
 	id_token = excluded.id_token,
@@ -335,6 +349,8 @@ ON CONFLICT(email) DO UPDATE SET
 	cooldown_until = excluded.cooldown_until,
 	disable_reason = excluded.disable_reason,
 	last_used_at = excluded.last_used_at,
+	refresh_disabled = excluded.refresh_disabled,
+	refresh_disabled_reason = excluded.refresh_disabled_reason,
 	updated_at = CURRENT_TIMESTAMP`
 		stmtEm, err := m.db.Prepare(s2)
 		if err != nil {
@@ -344,8 +360,8 @@ ON CONFLICT(email) DO UPDATE SET
 		return nil
 	default:
 		s1 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
 ON CONFLICT (account_id) DO UPDATE SET
 	email = EXCLUDED.email,
 	id_token = EXCLUDED.id_token,
@@ -358,6 +374,8 @@ ON CONFLICT (account_id) DO UPDATE SET
 	cooldown_until = EXCLUDED.cooldown_until,
 	disable_reason = EXCLUDED.disable_reason,
 	last_used_at = EXCLUDED.last_used_at,
+	refresh_disabled = EXCLUDED.refresh_disabled,
+	refresh_disabled_reason = EXCLUDED.refresh_disabled_reason,
 	updated_at = NOW()`
 		stmt, err := m.db.Prepare(s1)
 		if err != nil {
@@ -365,8 +383,8 @@ ON CONFLICT (account_id) DO UPDATE SET
 		}
 		m.saveTokenStmt = stmt
 		s2 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
 ON CONFLICT (email) DO UPDATE SET
 	account_id = EXCLUDED.account_id,
 	id_token = EXCLUDED.id_token,
@@ -379,6 +397,8 @@ ON CONFLICT (email) DO UPDATE SET
 	cooldown_until = EXCLUDED.cooldown_until,
 	disable_reason = EXCLUDED.disable_reason,
 	last_used_at = EXCLUDED.last_used_at,
+	refresh_disabled = EXCLUDED.refresh_disabled,
+	refresh_disabled_reason = EXCLUDED.refresh_disabled_reason,
 	updated_at = NOW()`
 		stmtEm, err := m.db.Prepare(s2)
 		if err != nil {
@@ -684,6 +704,13 @@ func accountFromTokenFile(tf *TokenFile, logicalPath string) (*Account, error) {
 		acc.DisableReason = reason
 		acc.atomicStatus.Store(int32(StatusDisabled))
 	}
+	if tf.RefreshDisabled {
+		acc.RefreshDisabled = true
+		acc.RefreshDisabledReason = strings.TrimSpace(tf.RefreshDisabledReason)
+		if acc.RefreshDisabledReason == "" {
+			acc.RefreshDisabledReason = ReasonRefreshPermanentFailed
+		}
+	}
 	acc.SyncAccessExpireFromToken()
 	return acc, nil
 }
@@ -706,7 +733,62 @@ func loadAccountFromFile(filePath string) (*Account, error) {
 	return accountFromTokenFile(&tf, filePath)
 }
 
-func accountFromDBRow(id int64, accountID, email, idToken, accessToken, refreshToken, expire, planType sql.NullString, lastRefresh sql.NullTime, status sql.NullInt32, cooldownUntil sql.NullTime, disableReason sql.NullString, lastUsedAt sql.NullTime) (*Account, bool) {
+type dbTime struct {
+	Time  time.Time
+	Valid bool
+}
+
+func (t *dbTime) Scan(value any) error {
+	if value == nil {
+		t.Time = time.Time{}
+		t.Valid = false
+		return nil
+	}
+	switch v := value.(type) {
+	case time.Time:
+		t.Time = v
+		t.Valid = !v.IsZero()
+		return nil
+	case string:
+		return t.scanString(v)
+	case []byte:
+		return t.scanString(string(v))
+	default:
+		return t.scanString(fmt.Sprint(v))
+	}
+}
+
+func (t *dbTime) scanString(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.HasPrefix(s, "0001-01-01") {
+		t.Time = time.Time{}
+		t.Valid = false
+		return nil
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999Z07:00",
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05.999999",
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			t.Time = parsed
+			t.Valid = true
+			return nil
+		}
+	}
+	t.Time = time.Time{}
+	t.Valid = false
+	return nil
+}
+
+func accountFromDBRow(id int64, accountID, email, idToken, accessToken, refreshToken, expire, planType sql.NullString, lastRefresh dbTime, status sql.NullInt32, cooldownUntil dbTime, disableReason sql.NullString, lastUsedAt dbTime, refreshDisabled sql.NullBool, refreshDisabledReason sql.NullString) (*Account, bool) {
 	if strings.TrimSpace(refreshToken.String) == "" && strings.TrimSpace(accessToken.String) == "" && strings.TrimSpace(idToken.String) == "" {
 		return nil, false
 	}
@@ -750,6 +832,13 @@ func accountFromDBRow(id int64, accountID, email, idToken, accessToken, refreshT
 		acc.LastUsedAt = lastUsedAt.Time
 		acc.lastSuccessUnixMs.Store(lastUsedAt.Time.UnixMilli())
 	}
+	if refreshDisabled.Valid && refreshDisabled.Bool {
+		acc.RefreshDisabled = true
+		acc.RefreshDisabledReason = strings.TrimSpace(refreshDisabledReason.String)
+		if acc.RefreshDisabledReason == "" {
+			acc.RefreshDisabledReason = ReasonRefreshPermanentFailed
+		}
+	}
 	acc.SyncAccessExpireFromToken()
 	return acc, true
 }
@@ -759,7 +848,7 @@ func (m *Manager) loadAccountsFromDBSlice(ctx context.Context, offset, limit int
 	if m.db == nil {
 		return nil, 0, nil
 	}
-	base := `SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at FROM codex_accounts ORDER BY id`
+	base := `SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts ORDER BY id`
 	var rows *sql.Rows
 	var err error
 	switch m.dbDialect {
@@ -777,14 +866,15 @@ func (m *Manager) loadAccountsFromDBSlice(ctx context.Context, offset, limit int
 	for rows.Next() {
 		rowCount++
 		var id int64
-		var accountID, email, idToken, accessToken, refreshToken, expire, planType, disableReason sql.NullString
-		var lastRefresh, cooldownUntil, lastUsedAt sql.NullTime
+		var accountID, email, idToken, accessToken, refreshToken, expire, planType, disableReason, refreshDisabledReason sql.NullString
+		var lastRefresh, cooldownUntil, lastUsedAt dbTime
 		var status sql.NullInt32
-		if err := rows.Scan(&id, &accountID, &email, &idToken, &accessToken, &refreshToken, &expire, &planType, &lastRefresh, &status, &cooldownUntil, &disableReason, &lastUsedAt); err != nil {
+		var refreshDisabled sql.NullBool
+		if err := rows.Scan(&id, &accountID, &email, &idToken, &accessToken, &refreshToken, &expire, &planType, &lastRefresh, &status, &cooldownUntil, &disableReason, &lastUsedAt, &refreshDisabled, &refreshDisabledReason); err != nil {
 			log.Warnf("读取数据库账号失败: %v", err)
 			continue
 		}
-		if acc, ok := accountFromDBRow(id, accountID, email, idToken, accessToken, refreshToken, expire, planType, lastRefresh, status, cooldownUntil, disableReason, lastUsedAt); ok {
+		if acc, ok := accountFromDBRow(id, accountID, email, idToken, accessToken, refreshToken, expire, planType, lastRefresh, status, cooldownUntil, disableReason, lastUsedAt, refreshDisabled, refreshDisabledReason); ok {
 			out = append(out, acc)
 		}
 	}
@@ -795,7 +885,7 @@ func (m *Manager) loadAccountsFromDB() error {
 	if m.db == nil {
 		return nil
 	}
-	rows, err := m.db.Query(`SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at FROM codex_accounts ORDER BY id`)
+	rows, err := m.db.Query(`SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -806,14 +896,15 @@ func (m *Manager) loadAccountsFromDB() error {
 
 	for rows.Next() {
 		var id int64
-		var accountID, email, idToken, accessToken, refreshToken, expire, planType, disableReason sql.NullString
-		var lastRefresh, cooldownUntil, lastUsedAt sql.NullTime
+		var accountID, email, idToken, accessToken, refreshToken, expire, planType, disableReason, refreshDisabledReason sql.NullString
+		var lastRefresh, cooldownUntil, lastUsedAt dbTime
 		var status sql.NullInt32
-		if err := rows.Scan(&id, &accountID, &email, &idToken, &accessToken, &refreshToken, &expire, &planType, &lastRefresh, &status, &cooldownUntil, &disableReason, &lastUsedAt); err != nil {
+		var refreshDisabled sql.NullBool
+		if err := rows.Scan(&id, &accountID, &email, &idToken, &accessToken, &refreshToken, &expire, &planType, &lastRefresh, &status, &cooldownUntil, &disableReason, &lastUsedAt, &refreshDisabled, &refreshDisabledReason); err != nil {
 			log.Warnf("读取数据库账号失败: %v", err)
 			continue
 		}
-		acc, ok := accountFromDBRow(id, accountID, email, idToken, accessToken, refreshToken, expire, planType, lastRefresh, status, cooldownUntil, disableReason, lastUsedAt)
+		acc, ok := accountFromDBRow(id, accountID, email, idToken, accessToken, refreshToken, expire, planType, lastRefresh, status, cooldownUntil, disableReason, lastUsedAt, refreshDisabled, refreshDisabledReason)
 		if !ok {
 			continue
 		}
@@ -894,6 +985,8 @@ func (m *Manager) saveTokenToDB(acc *Account) error {
 	status := int(acc.Status)
 	cooldownUntil := acc.CooldownUntil
 	disableReason := acc.DisableReason
+	refreshDisabled := acc.RefreshDisabled
+	refreshDisabledReason := acc.RefreshDisabledReason
 	lastUsedAt := acc.LastUsedAt
 	args := []any{
 		acc.Token.AccountID,
@@ -908,11 +1001,17 @@ func (m *Manager) saveTokenToDB(acc *Account) error {
 		cooldownUntil,
 		disableReason,
 		lastUsedAt,
+		refreshDisabled,
+		refreshDisabledReason,
 	}
 	acc.mu.RUnlock()
 
-	aid := strings.TrimSpace(acc.Token.AccountID)
-	em := strings.TrimSpace(acc.Token.Email)
+	aid := ""
+	em := ""
+	acc.mu.RLock()
+	aid = strings.TrimSpace(acc.Token.AccountID)
+	em = strings.TrimSpace(acc.Token.Email)
+	acc.mu.RUnlock()
 
 	if m.dbDialect == codexdb.DialectMySQL && m.saveTokenStmt != nil {
 		_, err := m.saveTokenStmt.Exec(args...)
@@ -934,8 +1033,8 @@ func (m *Manager) saveTokenToDB(acc *Account) error {
 	switch m.dbDialect {
 	case codexdb.DialectMySQL:
 		_, err := m.db.Exec(`
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
 ON DUPLICATE KEY UPDATE
 	email = VALUES(email),
 	account_id = VALUES(account_id),
@@ -949,12 +1048,14 @@ ON DUPLICATE KEY UPDATE
 	cooldown_until = VALUES(cooldown_until),
 	disable_reason = VALUES(disable_reason),
 	last_used_at = VALUES(last_used_at),
+	refresh_disabled = VALUES(refresh_disabled),
+	refresh_disabled_reason = VALUES(refresh_disabled_reason),
 	updated_at = VALUES(updated_at)`, args...)
 		return err
 	case codexdb.DialectSQLite:
 		_, err := m.db.Exec(`
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(account_id) DO UPDATE SET
 	email = excluded.email,
 	id_token = excluded.id_token,
@@ -967,12 +1068,14 @@ ON CONFLICT(account_id) DO UPDATE SET
 	cooldown_until = excluded.cooldown_until,
 	disable_reason = excluded.disable_reason,
 	last_used_at = excluded.last_used_at,
+	refresh_disabled = excluded.refresh_disabled,
+	refresh_disabled_reason = excluded.refresh_disabled_reason,
 	updated_at = CURRENT_TIMESTAMP`, args...)
 		return err
 	default:
 		_, err := m.db.Exec(`
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
 ON CONFLICT (account_id) DO UPDATE SET
 	email = EXCLUDED.email,
 	id_token = EXCLUDED.id_token,
@@ -985,6 +1088,8 @@ ON CONFLICT (account_id) DO UPDATE SET
 	cooldown_until = EXCLUDED.cooldown_until,
 	disable_reason = EXCLUDED.disable_reason,
 	last_used_at = EXCLUDED.last_used_at,
+	refresh_disabled = EXCLUDED.refresh_disabled,
+	refresh_disabled_reason = EXCLUDED.refresh_disabled_reason,
 	updated_at = NOW()`, args...)
 		return err
 	}
@@ -1462,6 +1567,9 @@ func quotaFailureReasonCode(code int) string {
 }
 
 func (m *Manager) trySingleRefreshToken(ctx context.Context, acc *Account) (*TokenData, error) {
+	if acc.IsRefreshDisabled() {
+		return nil, fmt.Errorf("refresh disabled: %s", acc.RefreshDisabledReason)
+	}
 	acc.mu.RLock()
 	rt := acc.Token.RefreshToken
 	acc.mu.RUnlock()
@@ -1576,13 +1684,31 @@ func (m *Manager) runRefreshStatusPolicy(ctx context.Context, acc *Account, emai
 	}
 }
 
+func (m *Manager) markRefreshDisabledIfAccessUsable(acc *Account, email string, err error) bool {
+	if acc == nil || !acc.AccessTokenUsableNow() {
+		return false
+	}
+	acc.SetRefreshDisabled(ReasonRefreshPermanentFailed, err)
+	m.InvalidateSelectorCache()
+	if saveErr := m.saveTokenToFile(acc); saveErr != nil {
+		log.Errorf("账号 [%s] 标记不可刷新后持久化失败: %v", email, saveErr)
+	}
+	m.enqueueSave(acc)
+	log.Warnf("账号 [%s] OAuth refresh 凭据已永久失效，已标记不可刷新；当前 access_token 仍可用: %v", email, err)
+	m.recordAutoAccountEvent(AccountEventActionRefreshDisable, acc, ReasonRefreshPermanentFailed, "refresh 凭据永久失效，AccessToken 有效期内继续使用")
+	return true
+}
+
 /**
  * handleRefreshHTTPError 处理 OAuth 刷新失败（带 RefreshError 状态码时走 refresh-http-status-policy）
  * noPolicyRemove：未配置该状态码时 true=删号（强制刷新周期），false=禁用凭据（401 恢复路径）
  */
 func (m *Manager) handleRefreshHTTPError(ctx context.Context, acc *Account, email string, err error, noPolicyRemove bool) (recovered bool, outcome QuotaApplyOutcome) {
 	if IsPermanentOAuthRefreshFailure(err) {
-		log.Warnf("账号 [%s] OAuth refresh 凭据已永久失效，已从号池删除: %v", email, err)
+		if m.markRefreshDisabledIfAccessUsable(acc, email, err) {
+			return false, QuotaApplyRefreshDisabled
+		}
+		log.Warnf("账号 [%s] OAuth refresh 凭据已永久失效，access_token 已过期或即将过期，已从号池删除: %v", email, err)
 		m.RemoveAccount(acc, ReasonRefreshFailed)
 		return false, QuotaApplyRemoved
 	}
@@ -2043,6 +2169,9 @@ func (m *Manager) filterNeedRefresh(accounts []*Account) []*Account {
 	}
 
 	for _, acc := range accounts {
+		if acc.IsRefreshDisabled() {
+			continue
+		}
 		/* 正在刷新中，跳过 */
 		if acc.refreshing.Load() != 0 {
 			continue
@@ -2137,7 +2266,7 @@ func (m *Manager) ForceRefreshAllStream(ctx context.Context, quotaChecker *Quota
 		log.Infof("开始手动强制刷新 %d 个账号（并发 %d）", total, m.refreshConcurrency)
 
 		for _, acc := range accounts {
-			if acc.IsManuallyDisabled() {
+			if acc.IsManuallyDisabled() || acc.IsRefreshDisabled() {
 				continue
 			}
 			acc.SetActive()
@@ -2212,6 +2341,10 @@ func (m *Manager) ForceRefreshAllStream(ctx context.Context, quotaChecker *Quota
  * @returns bool - 刷新是否成功
  */
 func (m *Manager) forceRefreshAccount(ctx context.Context, acc *Account) bool {
+	if acc.IsRefreshDisabled() {
+		log.Infof("账号 [%s] 已标记为不可刷新，跳过强制刷新", acc.GetEmail())
+		return true
+	}
 	/* CAS 去重：防止同一账号被多个刷新源同时刷新 */
 	if !acc.refreshing.CompareAndSwap(0, 1) {
 		log.Debugf("账号 [%s] 正在刷新中，跳过强制刷新", acc.GetEmail())
@@ -2260,12 +2393,16 @@ func mapRecover401FromRefreshOutcome(q QuotaApplyOutcome, email, fp string, refr
 	case QuotaApplyDisabled:
 		r.Status = Auth401RecoverDisabled
 		r.ReasonCode = ReasonAuth401Disabled
+	case QuotaApplyRefreshDisabled:
+		r.Status = Auth401RecoverSkippedBusy
+		r.ReasonCode = ReasonRefreshPermanentFailed
+		r.Detail = "refresh_disabled_access_token_still_usable"
 	case QuotaApplyCooldown:
 		r.Status = Auth401RecoverRefreshFailedCooldown
 	default: /* QuotaApplyNone：如 ctx 取消导致策略未落地，勿误报为 429 额度正常 */
 		r.Status = Auth401RecoverSkippedBusy
 	}
-	if refreshErr != nil {
+	if refreshErr != nil && q != QuotaApplyRefreshDisabled {
 		r.Detail = refreshErr.Error()
 	} else if q == QuotaApplyNone {
 		r.Detail = "refresh_outcome_none"
@@ -2333,6 +2470,9 @@ func (m *Manager) RecoverAuth401(ctx context.Context, acc *Account, qc *QuotaChe
 	if acc == nil {
 		return Auth401RecoverResult{Status: Auth401RecoverInvalid, Detail: "account is nil"}
 	}
+	if acc.IsRefreshDisabled() {
+		return Auth401RecoverResult{Email: acc.GetEmail(), FilePath: acc.FilePath, Status: Auth401RecoverSkippedBusy, ReasonCode: ReasonRefreshPermanentFailed, Detail: "refresh_disabled"}
+	}
 	key := acc.FilePath
 	if key == "" {
 		key = acc.GetEmail()
@@ -2370,6 +2510,12 @@ func (m *Manager) recoverAuth401Once(ctx context.Context, acc *Account, qc *Quot
 	email := acc.GetEmail()
 	fp := acc.FilePath
 	out := Auth401RecoverResult{Email: email, FilePath: fp}
+	if acc.IsRefreshDisabled() {
+		out.Status = Auth401RecoverSkippedBusy
+		out.ReasonCode = ReasonRefreshPermanentFailed
+		out.Detail = "refresh_disabled"
+		return out
+	}
 
 	if !acc.refreshing.CompareAndSwap(0, 1) {
 		/* 与后台批量刷新并发时：等对方写完 Token 后本请求同号重试，避免刷新已成功却仍走换号/空解析 */
@@ -2557,6 +2703,9 @@ func (m *Manager) ScheduleUpstream429Recovery(_ context.Context, acc *Account, q
 	if qc == nil || acc == nil {
 		return
 	}
+	if acc.IsRefreshDisabled() {
+		return
+	}
 	if !acc.HasRefreshToken() {
 		return
 	}
@@ -2593,7 +2742,7 @@ func (m *Manager) ScheduleUpstream429Recovery(_ context.Context, acc *Account, q
 				return
 			}
 
-			if !m.AccountInPool(acc) {
+			if !m.AccountInPool(acc) || acc.IsRefreshDisabled() {
 				return
 			}
 
@@ -2603,7 +2752,11 @@ func (m *Manager) ScheduleUpstream429Recovery(_ context.Context, acc *Account, q
 					defer acc.refreshing.Store(0)
 					acc.mu.RLock()
 					rt := acc.Token.RefreshToken
+					refreshDisabled := acc.RefreshDisabled
 					acc.mu.RUnlock()
+					if refreshDisabled {
+						return
+					}
 					if rt == "" {
 						m.RemoveAccount(acc, ReasonQuotaRecheckFailed)
 						return
@@ -2667,6 +2820,10 @@ func (m *Manager) ScheduleUpstream429Recovery(_ context.Context, acc *Account, q
  * @param acc - 要刷新的账号
  */
 func (m *Manager) refreshAccount(ctx context.Context, acc *Account) {
+	if acc.IsRefreshDisabled() {
+		log.Debugf("账号 [%s] 已标记为不可刷新，跳过后台刷新", acc.GetEmail())
+		return
+	}
 	/* CAS 去重：防止同一账号被多个刷新源同时刷新 */
 	if !acc.refreshing.CompareAndSwap(0, 1) {
 		log.Debugf("账号 [%s] 正在刷新中，跳过", acc.GetEmail())
@@ -2720,6 +2877,8 @@ func (m *Manager) saveTokenToFile(acc *Account) error {
 	}
 	acc.mu.RLock()
 	manualDisabled := acc.Status == StatusDisabled && acc.DisableReason == ReasonManualDisabled
+	refreshDisabled := acc.RefreshDisabled
+	refreshDisabledReason := acc.RefreshDisabledReason
 	tf := TokenFile{
 		IDToken:      acc.Token.IDToken,
 		AccessToken:  acc.Token.AccessToken,
@@ -2736,6 +2895,8 @@ func (m *Manager) saveTokenToFile(acc *Account) error {
 			}
 			return ""
 		}(),
+		RefreshDisabled:       refreshDisabled,
+		RefreshDisabledReason: refreshDisabledReason,
 	}
 	filePath := acc.FilePath
 	acc.mu.RUnlock()
