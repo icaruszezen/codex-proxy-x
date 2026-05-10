@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.12.0...v1.13.0) (2026-05-10)
+
+
+### ✨ 新功能
+
+* 添加刷新禁用功能，更新数据库结构和相关逻辑以支持账号的刷新状态管理 ([74b8d34](https://github.com/icaruszezen/codex-proxy-x/commit/74b8d34810202438bfe8453d1dbbcb65784da6d3))
+
 ## [1.12.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.11.0...v1.12.0) (2026-05-10)
 
 
