@@ -288,3 +288,61 @@ export async function requestAccountToggleEnabled(cred, payload, signal) {
     disableReason: String(data?.disable_reason || "")
   };
 }
+
+export async function requestQmsgConfig(cred, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/qmsg/config"), {
+    method: "GET",
+    headers: buildHeaders(cred),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return data?.config || {};
+}
+
+export async function saveQmsgConfig(cred, config, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = {
+    enabled: Boolean(config?.enabled),
+    key: String(config?.key || "").trim(),
+    qq: String(config?.qq || "").trim(),
+    bot: String(config?.bot || "").trim(),
+    timeout_sec: Number(config?.timeoutSec ?? config?.timeout_sec ?? 10) || 10,
+    message_template: String(config?.messageTemplate ?? config?.message_template ?? ""),
+    endpoint_template: String(config?.endpointTemplate ?? config?.endpoint_template ?? "")
+  };
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/qmsg/config"), {
+    method: "PUT",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return data?.config || {};
+}
+
+export async function testQmsgChannel(cred, message, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/qmsg/test"), {
+    method: "POST",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ message: String(message || "").trim() }),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  return await res.json();
+}

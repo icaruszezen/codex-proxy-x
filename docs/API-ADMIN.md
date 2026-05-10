@@ -20,6 +20,9 @@ Authorization: Bearer <与 api-keys 中某一项完全一致>
 | POST | `/recover-auth` | 401 恢复：按邮箱/路径/全部同步刷新；失败可能将凭据重命名为 `*.json.disabled` |
 | POST | `/admin/accounts/ingest` | **导入账号**：HTTP 上传 JSON 填充号池（见下文） |
 | GET 或 POST | `/admin/accounts/ingest` | 同上路径，带 **`Upgrade: websocket`** 时使用 **WebSocket** 导入（见下文） |
+| GET | `/admin/qmsg/config` | 读取 qmsg 私聊通知配置 |
+| PUT | `/admin/qmsg/config` | 保存 qmsg 私聊通知配置，立即生效并写入服务端本地文件 |
+| POST | `/admin/qmsg/test` | 发送 qmsg 测试消息，验证推送通道 |
 
 对话相关接口（`/v1/*`）的鉴权规则相同：配置了 `api-keys` 则必须带 Bearer。
 
@@ -115,6 +118,92 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/ingest" \
 
 ---
 
+## qmsg 私聊通知：`/admin/qmsg/*`
+
+用于配置 qmsg 私聊推送通道。配置保存到服务端本地文件 `auth-dir/qmsg-config.json`，保存后立即生效，无需重启。启用后，账号发生自动删除或自动停用事件时会异步推送通知；推送失败只记录日志，不会阻断账号处置流程。
+
+qmsg 接口使用 JSON 私聊推送：`POST https://qmsg.zendee.cn/jsend/{KEY}`，请求体为 `{"msg":"...","qq":"可选","bot":"可选"}`。其中 `bot` 是可选的 Qmsg 酱机器人 QQ；不填时由 qmsg 自动随机选择在线机器人。qmsg 的成功判断以响应体中的 `success` 为准，详见 [Qmsg酱 API 文档](https://qmsg.zendee.cn/docs/api/)。
+
+### `GET /admin/qmsg/config`
+
+读取当前配置。出于安全考虑，响应不会返回明文 key，只返回掩码。
+
+```json
+{
+  "object": "qmsg_config",
+  "config": {
+    "enabled": true,
+    "key_masked": "abcd********mnop",
+    "qq": "12345",
+    "bot": "67890",
+    "timeout_sec": 10,
+    "message_template": "账号自动{{action}}通知\n邮箱：{{email}}...",
+    "endpoint_template": "https://qmsg.zendee.cn/jsend/{key}",
+    "configured": true
+  }
+}
+```
+
+### `PUT /admin/qmsg/config`
+
+保存配置。`enabled=true` 时必须已有 key 或在本次请求中提供 `key`；如果请求中的 `key` 为空且服务端已有 key，则保留原 key。`bot` 为可选项，用于指定发送消息的 Qmsg 酱机器人；如果测试返回“您选择的Qmsg不在线，请选择其他Qmsg酱”，可以清空 `bot` 让 qmsg 随机选择在线机器人，或换成其他在线机器人 QQ。
+
+```bash
+curl -sS -X PUT "http://127.0.0.1:8080/admin/qmsg/config" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enabled": true,
+    "key": "qmsg-key",
+    "qq": "12345",
+    "bot": "67890",
+    "timeout_sec": 10,
+    "message_template": "账号自动{{action}}通知\n邮箱：{{email}}\n原因：{{reason_code}}\n详情：{{detail}}\n时间：{{timestamp}}"
+  }'
+```
+
+模板变量包括：
+
+| 变量 | 含义 |
+|------|------|
+| `{{action}}` | 中文动作：删除 / 停用 |
+| `{{action_code}}` | 原始动作编码：`remove` / `disable` |
+| `{{email}}` | 账号邮箱 |
+| `{{reason_code}}` | 删除/停用原因编码 |
+| `{{detail}}` | 处置详情 |
+| `{{storage_mode}}` | 持久化模式：`file` / `db` |
+| `{{timestamp}}` | 本地时间 |
+| `{{timestamp_utc}}` | UTC RFC3339 时间 |
+
+### `POST /admin/qmsg/test`
+
+发送测试消息。请求体可为空；为空时服务端生成默认测试消息。
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/qmsg/test" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"这是一条 qmsg 测试消息"}'
+```
+
+成功响应示例：
+
+```json
+{
+  "object": "qmsg_test_result",
+  "success": true,
+  "result": {
+    "success": true,
+    "reason": "操作成功",
+    "code": 0,
+    "info": { "msgId": 5866868 },
+    "msg_id": 5866868
+  }
+}
+```
+
+---
+
 ## 其他管理接口摘要
 
 ### `POST /recover-auth`
@@ -134,4 +223,5 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/ingest" \
 ## 安全建议
 
 - 导入接口会写入**完整 OAuth 凭据**，权限与修改号池等价；务必 **配置 `api-keys`**、限制来源 IP，或通过反向代理仅对内网开放 `/admin/`。  
-- 勿在日志、工单中粘贴真实 `refresh_token`。
+- qmsg 配置文件包含明文 KEY，默认保存为 `auth-dir/qmsg-config.json` 且文件权限为 `0600`；请保护 `auth-dir` 目录访问权限。
+- 勿在日志、工单中粘贴真实 `refresh_token` 或 qmsg KEY。

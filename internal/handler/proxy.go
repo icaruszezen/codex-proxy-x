@@ -20,6 +20,7 @@ import (
 
 	"codex-proxy/internal/auth"
 	"codex-proxy/internal/executor"
+	"codex-proxy/internal/notify"
 	"codex-proxy/internal/thinking"
 
 	fasthttprouter "github.com/fasthttp/router"
@@ -74,6 +75,7 @@ type ProxyHandler struct {
 	maxRetry                  int
 	enableHealthyRetry        bool
 	quotaChecker              *auth.QuotaChecker
+	qmsgService               *notify.Service
 	quotaPrecheck             bool /* true：选号后 wham 预检；false：直发上游，401 换号+异步 OAuth */
 	indexHTML                 []byte
 	emptyRetryMax             int
@@ -110,7 +112,7 @@ type auth401RecoverTrack struct {
  * @param debugUpstreamStream - 是否 Info 打印上游 Codex SSE 原文（对应配置 debug-upstream-stream）
  * @returns *ProxyHandler - 代理处理器实例
  */
-func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, indexHTML []byte) *ProxyHandler {
+func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, indexHTML []byte) *ProxyHandler {
 	if maxRetry < 0 {
 		maxRetry = 0
 	}
@@ -127,6 +129,7 @@ func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []s
 		maxRetry:            maxRetry,
 		enableHealthyRetry:  enableHealthyRetry,
 		quotaChecker:        quotaChecker,
+		qmsgService:         qmsgService,
 		quotaPrecheck:       quotaPrecheck,
 		indexHTML:           indexHTML,
 		emptyRetryMax:       emptyRetryMax,
@@ -206,13 +209,20 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 
 	accountsIngestHandler := h.handleAccountsIngest
 	accountsToggleEnabledHandler := h.handleAccountToggleEnabled
+	qmsgConfigHandler := h.handleQmsgConfig
+	qmsgTestHandler := h.handleQmsgTest
 	if len(h.apiKeys) > 0 {
 		accountsIngestHandler = h.authMiddleware(h.handleAccountsIngest)
 		accountsToggleEnabledHandler = h.authMiddleware(h.handleAccountToggleEnabled)
+		qmsgConfigHandler = h.authMiddleware(h.handleQmsgConfig)
+		qmsgTestHandler = h.authMiddleware(h.handleQmsgTest)
 	}
 	r.POST("/admin/accounts/ingest", accountsIngestHandler)
 	r.GET("/admin/accounts/ingest", accountsIngestHandler)
 	r.POST("/admin/accounts/toggle-enabled", accountsToggleEnabledHandler)
+	r.GET("/admin/qmsg/config", qmsgConfigHandler)
+	r.PUT("/admin/qmsg/config", qmsgConfigHandler)
+	r.POST("/admin/qmsg/test", qmsgTestHandler)
 }
 
 /**

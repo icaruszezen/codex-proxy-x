@@ -15,6 +15,7 @@ import (
 	"time"
 
 	codexdb "codex-proxy/internal/db"
+	"codex-proxy/internal/notify"
 
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
@@ -105,7 +106,8 @@ type Manager struct {
 	/* auth401SyncSem 非 nil 时限制全局同步 OAuth 并发（recoverAuth401Once 内 acquire） */
 	auth401SyncSem chan struct{}
 	/* postRefreshQuota OAuth 刷新成功后用于立刻校验 wham/usage；nil 表示不校验（由 SetPostRefreshQuotaChecker 注入） */
-	postRefreshQuota atomic.Pointer[QuotaChecker]
+	postRefreshQuota     atomic.Pointer[QuotaChecker]
+	accountEventNotifier atomic.Pointer[notify.Service]
 	/* quotaPrecheck 见 ManagerOptions.QuotaPrecheck；false 时 recoverAuth401Once 不在刷新后查 wham */
 	quotaPrecheck bool
 	/* disableAuth401Remove true 时 401 刷新失败不删号/不禁用，只冷却 */
@@ -1248,16 +1250,44 @@ func (m *Manager) recordAutoAccountEvent(action AccountEventAction, acc *Account
 	if m.db != nil {
 		storageMode = "db"
 	}
-	if err := m.eventLog.Append(AccountEvent{
+	event := AccountEvent{
 		Timestamp:   time.Now().UTC(),
 		Action:      action,
 		Email:       email,
 		ReasonCode:  reason,
 		Detail:      strings.TrimSpace(detail),
 		StorageMode: storageMode,
-	}); err != nil {
-		log.Errorf("账号 [%s] 自动事件记录失败: action=%s reason=%s err=%v", email, action, reason, err)
 	}
+	if err := m.eventLog.Append(event); err != nil {
+		log.Errorf("账号 [%s] 自动事件记录失败: action=%s reason=%s err=%v", email, action, reason, err)
+		return
+	}
+	m.notifyAutoAccountEvent(event)
+}
+
+func (m *Manager) notifyAutoAccountEvent(event AccountEvent) {
+	if m == nil {
+		return
+	}
+	service := m.accountEventNotifier.Load()
+	if service == nil {
+		return
+	}
+	notifyEvent := notify.AccountEvent{
+		Timestamp:   event.Timestamp,
+		Action:      string(event.Action),
+		Email:       event.Email,
+		ReasonCode:  event.ReasonCode,
+		Detail:      event.Detail,
+		StorageMode: event.StorageMode,
+	}
+	go func() {
+		_, err := service.SendAccountEvent(context.Background(), notifyEvent)
+		if err == nil || errors.Is(err, notify.ErrQmsgDisabled) {
+			return
+		}
+		log.Warnf("账号 [%s] qmsg 自动事件推送失败: action=%s reason=%s err=%v", event.Email, event.Action, event.ReasonCode, err)
+	}()
 }
 
 func (m *Manager) RecentAccountEvents(limit int) []AccountEvent {
@@ -1680,6 +1710,13 @@ func (m *Manager) SetPostRefreshQuotaChecker(qc *QuotaChecker) {
 		return
 	}
 	m.postRefreshQuota.Store(qc)
+}
+
+func (m *Manager) SetAccountEventNotifier(service *notify.Service) {
+	if m == nil {
+		return
+	}
+	m.accountEventNotifier.Store(service)
 }
 
 func (m *Manager) effectiveQuotaAfterRefresh(qcArg *QuotaChecker) *QuotaChecker {

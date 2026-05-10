@@ -236,6 +236,7 @@ button:disabled {
 
 select,
 input[type="text"],
+input[type="number"],
 textarea {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -508,6 +509,60 @@ tr:hover td {
   line-height: 1.7;
 }
 
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.form-grid label,
+.qmsg-form label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.check-row {
+  grid-column: 1 / -1;
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fffdf7;
+  color: var(--ink) !important;
+  font-size: 14px !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+.check-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-2);
+}
+
+.compact-head {
+  align-items: flex-end;
+}
+
+.compact-textarea {
+  min-height: 120px;
+}
+
+.qmsg-form code {
+  background: #fff6df;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 4px;
+}
+
 .alert-stack,
 .result-stack,
 .error-stack {
@@ -757,6 +812,7 @@ tr:hover td {
 @media (max-width: 640px) {
   .grid,
   .result-grid,
+  .form-grid,
   .placeholder-row {
     grid-template-columns: 1fr;
   }

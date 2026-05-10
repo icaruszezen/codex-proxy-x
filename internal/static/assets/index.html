@@ -18,6 +18,7 @@
         <button id="eventsViewBtn" class="secondary">删除记录</button>
         <button id="importViewBtn" class="secondary">账号导入</button>
         <button id="loginViewBtn" class="secondary">账号登录</button>
+        <button id="qmsgViewBtn" class="secondary">qmsg 通知</button>
         <button id="refreshBtn">刷新数据</button>
         <button id="clearBtn" class="secondary">清空缓存</button>
         <button id="recoverAllBtn" class="ghost">批量 401 恢复</button>
@@ -258,6 +259,72 @@
           </div>
           <textarea id="loginCallbackInput" placeholder="粘贴形如 http://localhost:1455/auth/callback?code=...&amp;state=... 的回调地址"></textarea>
           <div id="loginExchangeState" class="alert-stack"></div>
+        </div>
+      </section>
+
+      <section id="qmsgView" class="view hidden">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>qmsg 私聊通知</h2>
+              <p class="panel-note">配置 qmsg 私聊推送通道。启用后，账号发生自动删除或自动停用事件时，会通过 qmsg 发送通知。</p>
+            </div>
+            <div class="hero-actions">
+              <span id="qmsgConfigStatus" class="pill">未加载</span>
+              <button id="qmsgLoadBtn" class="ghost">重新加载</button>
+              <button id="backToStatsFromQmsgBtn" class="ghost">返回统计</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel qmsg-form">
+          <div class="form-grid">
+            <label class="check-row">
+              <input id="qmsgEnabled" type="checkbox" />
+              <span>启用 qmsg 自动通知</span>
+            </label>
+            <div>
+              <label for="qmsgKey">qmsg KEY</label>
+              <input id="qmsgKey" type="text" autocomplete="off" placeholder="输入 qmsg KEY" />
+              <p class="panel-note">KEY 保存后会写入服务端本地配置文件；重新打开页面时只显示掩码。</p>
+            </div>
+            <div>
+              <label for="qmsgQQ">指定接收 QQ</label>
+              <input id="qmsgQQ" type="text" placeholder="可选，多个 QQ 用英文逗号分隔" />
+            </div>
+            <div>
+              <label for="qmsgBot">指定 Qmsg 酱</label>
+              <input id="qmsgBot" type="text" placeholder="可选，机器人 QQ；不填则随机在线机器人" />
+              <p class="panel-note">当测试返回“您选择的Qmsg不在线”时，可清空此项或换一个在线机器人 QQ。</p>
+            </div>
+            <div>
+              <label for="qmsgTimeout">请求超时（秒）</label>
+              <input id="qmsgTimeout" type="number" min="1" max="60" step="1" value="10" />
+            </div>
+          </div>
+
+          <div>
+            <div class="section-head compact-head">
+              <div>
+                <label for="qmsgTemplate">自动通知模板</label>
+                <p class="panel-note">可用变量：<code>{{action}}</code>、<code>{{email}}</code>、<code>{{reason_code}}</code>、<code>{{detail}}</code>、<code>{{storage_mode}}</code>、<code>{{timestamp}}</code>、<code>{{timestamp_utc}}</code>。</p>
+              </div>
+              <button id="qmsgResetTemplateBtn" class="ghost" type="button">恢复默认模板</button>
+            </div>
+            <textarea id="qmsgTemplate" class="compact-textarea"></textarea>
+          </div>
+
+          <div>
+            <label for="qmsgTestMessage">测试消息</label>
+            <textarea id="qmsgTestMessage" class="compact-textarea" placeholder="留空则发送默认测试消息"></textarea>
+          </div>
+
+          <div class="hero-actions">
+            <button id="qmsgSaveBtn">保存配置</button>
+            <button id="qmsgTestBtn" class="secondary">测试推送</button>
+            <button id="openSettingsFromQmsgBtn" class="ghost">设置接口</button>
+          </div>
+          <div id="qmsgState" class="alert-stack"></div>
         </div>
       </section>
     </main>
