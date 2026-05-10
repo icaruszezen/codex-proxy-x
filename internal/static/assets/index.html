@@ -15,6 +15,7 @@
       </div>
       <div class="actions">
         <button id="statsViewBtn" class="ghost active">查看统计</button>
+        <button id="eventsViewBtn" class="secondary">删除记录</button>
         <button id="importViewBtn" class="secondary">账号导入</button>
         <button id="loginViewBtn" class="secondary">账号登录</button>
         <button id="refreshBtn">刷新数据</button>
@@ -29,17 +30,6 @@
       <section id="statsView" class="view">
         <section class="grid" id="summaryCards"></section>
         <section id="statsActionState" class="alert-stack stats-action-state" aria-live="polite"></section>
-        <section class="panel recent-events-panel">
-          <div class="section-head">
-            <div>
-              <h2>最近自动删除/停用记录</h2>
-              <p class="panel-note">展示最近自动删除或自动停用的账号事件。已删除账号即使不在当前账号池中，也会保留在这里。</p>
-            </div>
-            <span id="recentEventsCount" class="pill">最近 0 条</span>
-          </div>
-          <div id="recentEventsEmpty" class="muted">暂无自动删除/停用记录</div>
-          <div id="recentEventsList" class="event-list"></div>
-        </section>
         <section id="placeholder" class="placeholder" aria-hidden="true">
           <div class="placeholder-row">
             <div class="skeleton big"></div>
@@ -112,12 +102,29 @@
         </div>
       </section>
 
+      <section id="eventsView" class="view hidden">
+        <section class="panel recent-events-panel">
+          <div class="section-head">
+            <div>
+              <h2>最近自动删除/停用记录</h2>
+              <p class="panel-note">展示最近自动删除或自动停用的账号事件。已删除账号即使不在当前账号池中，也会保留在这里。</p>
+            </div>
+            <div class="hero-actions">
+              <span id="recentEventsCount" class="pill">最近 0 条</span>
+              <button id="backToStatsFromEventsBtn" class="ghost">返回统计</button>
+            </div>
+          </div>
+          <div id="recentEventsEmpty" class="muted">暂无自动删除/停用记录</div>
+          <div id="recentEventsList" class="event-list"></div>
+        </section>
+      </section>
+
       <section id="importView" class="view hidden">
         <div class="panel">
           <div class="section-head">
             <div>
               <h2>账号导入</h2>
-              <p class="panel-note">支持 JSON 对象、JSON 数组和 NDJSON。文件内容会先回填到下方文本框，导入前会做基础校验，并使用现有 <code>/stats</code> 数据做重复邮箱预检查。</p>
+              <p class="panel-note">支持 JSON 对象、JSON 数组、NDJSON，以及 sub2api 多账号 JSON 数组。文件内容会先回填到下方文本框，导入前会做基础校验，并使用现有 <code>/stats</code> 数据做重复邮箱预检查。</p>
             </div>
             <div class="hero-actions">
               <button id="backToStatsBtn" class="ghost">返回统计</button>
@@ -135,7 +142,7 @@
           </div>
           <div class="dropzone">
             <strong>拖拽暂不支持，点击按钮选择本地文件</strong>
-            <span>推荐使用 JSON 对象、JSON 数组或 NDJSON。提交时会发送标准 JSON 文本请求体，因此这里不会使用 multipart/form-data。</span>
+            <span>推荐使用 JSON 对象、JSON 数组、NDJSON 或 sub2api 导出的多账号 JSON。提交时会发送标准 JSON 文本请求体，因此这里不会使用 multipart/form-data。</span>
             <div class="file-meta">
               <button id="chooseImportFileBtn" class="secondary">选择本地文件</button>
               <input id="importFileInput" type="file" accept=".json,.ndjson,.txt,application/json,text/plain" class="hidden" />
@@ -155,7 +162,7 @@
               <button id="importSubmitBtn">提交导入</button>
             </div>
           </div>
-          <textarea id="importTextarea" placeholder="粘贴 JSON 对象、JSON 数组或 NDJSON"></textarea>
+          <textarea id="importTextarea" placeholder="粘贴 JSON 对象、JSON 数组、NDJSON 或 sub2api 多账号 JSON"></textarea>
         </div>
 
         <div class="panel">

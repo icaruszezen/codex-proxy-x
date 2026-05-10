@@ -37,6 +37,81 @@ func (r *IngestResult) appendErr(msg string) {
 }
 
 /**
+ * ingestNestedCredentialObjectKeys 兼容前端 tokens 与 sub2api credentials 嵌套凭据
+ */
+var ingestNestedCredentialObjectKeys = []string{"tokens", "credentials"}
+
+func ingestJSONStringField(fields map[string]json.RawMessage, key string) string {
+	raw, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func ingestJSONObjectField(fields map[string]json.RawMessage, key string) map[string]json.RawMessage {
+	raw, ok := fields[key]
+	if !ok || len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &nested); err != nil {
+		return nil
+	}
+	return nested
+}
+
+func fillIngestStringIfEmpty(target *string, fields map[string]json.RawMessage, key string) {
+	if target == nil || strings.TrimSpace(*target) != "" {
+		return
+	}
+	if value := ingestJSONStringField(fields, key); value != "" {
+		*target = value
+	}
+}
+
+func normalizeTokenFilePayload(tf *TokenFile, fields map[string]json.RawMessage) {
+	if tf == nil || fields == nil {
+		return
+	}
+	for _, key := range ingestNestedCredentialObjectKeys {
+		nested := ingestJSONObjectField(fields, key)
+		if nested == nil {
+			continue
+		}
+		fillIngestStringIfEmpty(&tf.RefreshToken, nested, "refresh_token")
+		fillIngestStringIfEmpty(&tf.RK, nested, "rk")
+		fillIngestStringIfEmpty(&tf.AccessToken, nested, "access_token")
+		fillIngestStringIfEmpty(&tf.IDToken, nested, "id_token")
+		fillIngestStringIfEmpty(&tf.AccountID, nested, "account_id")
+		fillIngestStringIfEmpty(&tf.Email, nested, "email")
+		fillIngestStringIfEmpty(&tf.Expire, nested, "expired")
+	}
+	fillIngestStringIfEmpty(&tf.Email, fields, "name")
+}
+
+func parseTokenFilePayload(raw []byte) (TokenFile, error) {
+	raw = bytes.TrimSpace(raw)
+	var tf TokenFile
+	if len(raw) == 0 {
+		return tf, fmt.Errorf("空 JSON 对象")
+	}
+	if err := json.Unmarshal(raw, &tf); err != nil {
+		return tf, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return tf, err
+	}
+	normalizeTokenFilePayload(&tf, fields)
+	return tf, nil
+}
+
+/**
  * parseTokenFilePayloads 解析请求体：JSON 数组、单个 JSON 对象，或 NDJSON（每行一个对象）
  */
 func parseTokenFilePayloads(body []byte) ([]TokenFile, error) {
@@ -46,14 +121,22 @@ func parseTokenFilePayloads(body []byte) ([]TokenFile, error) {
 	}
 	switch body[0] {
 	case '[':
-		var arr []TokenFile
+		var arr []json.RawMessage
 		if err := json.Unmarshal(body, &arr); err != nil {
 			return nil, fmt.Errorf("解析 JSON 数组失败: %w", err)
 		}
-		return arr, nil
+		out := make([]TokenFile, 0, len(arr))
+		for i, item := range arr {
+			tf, err := parseTokenFilePayload(item)
+			if err != nil {
+				return nil, fmt.Errorf("解析 JSON 数组第 %d 条失败: %w", i+1, err)
+			}
+			out = append(out, tf)
+		}
+		return out, nil
 	case '{':
-		var one TokenFile
-		if err := json.Unmarshal(body, &one); err != nil {
+		one, err := parseTokenFilePayload(body)
+		if err != nil {
 			return nil, fmt.Errorf("解析 JSON 对象失败: %w", err)
 		}
 		return []TokenFile{one}, nil
@@ -71,7 +154,8 @@ func parseNDJSONTokenFiles(body []byte) ([]TokenFile, error) {
 			continue
 		}
 		var tf TokenFile
-		if err := json.Unmarshal(line, &tf); err != nil {
+		var err error
+		if tf, err = parseTokenFilePayload(line); err != nil {
 			return nil, fmt.Errorf("第 %d 行 NDJSON 解析失败: %w", i+1, err)
 		}
 		out = append(out, tf)

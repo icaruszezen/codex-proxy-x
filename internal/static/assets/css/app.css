@@ -310,6 +310,14 @@ tr:hover td {
   gap: 14px;
 }
 
+#eventsView .recent-events-panel {
+  align-self: start;
+}
+
+#eventsView .event-list {
+  gap: 14px;
+}
+
 .event-list {
   display: grid;
   gap: 12px;

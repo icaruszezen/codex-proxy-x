@@ -5,12 +5,14 @@ import { setLoading } from "./ui.js";
 
 const CRED_KEY = "stats_credentials_v1";
 const VIEW_STATS = "stats";
+const VIEW_EVENTS = "events";
 const VIEW_IMPORT = "import";
 const VIEW_LOGIN = "login";
 
 const els = {
   pageSubtitle: document.getElementById("pageSubtitle"),
   statsViewBtn: document.getElementById("statsViewBtn"),
+  eventsViewBtn: document.getElementById("eventsViewBtn"),
   importViewBtn: document.getElementById("importViewBtn"),
   loginViewBtn: document.getElementById("loginViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
@@ -19,6 +21,7 @@ const els = {
   settingsBtn: document.getElementById("settingsBtn"),
   cacheState: document.getElementById("cacheState"),
   statsView: document.getElementById("statsView"),
+  eventsView: document.getElementById("eventsView"),
   importView: document.getElementById("importView"),
   loginView: document.getElementById("loginView"),
   loginGenerateBtn: document.getElementById("loginGenerateBtn"),
@@ -32,6 +35,7 @@ const els = {
   loginExchangeBtn: document.getElementById("loginExchangeBtn"),
   loginExchangeState: document.getElementById("loginExchangeState"),
   backToStatsFromLoginBtn: document.getElementById("backToStatsFromLoginBtn"),
+  backToStatsFromEventsBtn: document.getElementById("backToStatsFromEventsBtn"),
   openSettingsFromLoginBtn: document.getElementById("openSettingsFromLoginBtn"),
   summaryCards: document.getElementById("summaryCards"),
   statsActionState: document.getElementById("statsActionState"),
@@ -154,24 +158,30 @@ function showLogin(show) {
 
 function getViewFromHash() {
   const hash = window.location.hash.toLowerCase();
+  if (hash === "#events") return VIEW_EVENTS;
   if (hash === "#import") return VIEW_IMPORT;
   if (hash === "#login") return VIEW_LOGIN;
   return VIEW_STATS;
 }
 
 function updateViewState() {
+  const isEvents = activeView === VIEW_EVENTS;
   const isImport = activeView === VIEW_IMPORT;
   const isLogin = activeView === VIEW_LOGIN;
-  const isStats = !isImport && !isLogin;
-  els.pageSubtitle.textContent = isImport
-    ? "支持 JSON 对象、JSON 数组和 NDJSON 导入"
-    : isLogin
-      ? "通过 OpenAI OAuth 粘贴回调链接添加新账号"
-      : "数据只在点击刷新时更新";
+  const isStats = !isEvents && !isImport && !isLogin;
+  els.pageSubtitle.textContent = isEvents
+    ? "查看最近自动删除或自动停用的账号事件"
+    : isImport
+      ? "支持 JSON、NDJSON 与 sub2api 多账号导入"
+      : isLogin
+        ? "通过 OpenAI OAuth 粘贴回调链接添加新账号"
+        : "数据只在点击刷新时更新";
   els.statsView.classList.toggle("hidden", !isStats);
+  els.eventsView.classList.toggle("hidden", !isEvents);
   els.importView.classList.toggle("hidden", !isImport);
   els.loginView.classList.toggle("hidden", !isLogin);
   els.statsViewBtn.classList.toggle("active", isStats);
+  els.eventsViewBtn.classList.toggle("active", isEvents);
   els.importViewBtn.classList.toggle("active", isImport);
   els.loginViewBtn.classList.toggle("active", isLogin);
   els.refreshBtn.classList.toggle("hidden", !isStats);
@@ -181,13 +191,19 @@ function updateViewState() {
 
 function setView(view, options = {}) {
   const { updateHash = true } = options;
-  if (view === VIEW_IMPORT) activeView = VIEW_IMPORT;
+  if (view === VIEW_EVENTS) activeView = VIEW_EVENTS;
+  else if (view === VIEW_IMPORT) activeView = VIEW_IMPORT;
   else if (view === VIEW_LOGIN) activeView = VIEW_LOGIN;
   else activeView = VIEW_STATS;
   updateViewState();
   if (updateHash) {
-    const targetHash =
-      activeView === VIEW_IMPORT ? "#import" : activeView === VIEW_LOGIN ? "#login" : "#stats";
+    const targetHash = activeView === VIEW_EVENTS
+      ? "#events"
+      : activeView === VIEW_IMPORT
+        ? "#import"
+        : activeView === VIEW_LOGIN
+          ? "#login"
+          : "#stats";
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash;
     }
@@ -248,6 +264,9 @@ function bindGlobalEvents() {
   els.statsViewBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
   });
+  els.eventsViewBtn.addEventListener("click", () => {
+    setView(VIEW_EVENTS);
+  });
   els.importViewBtn.addEventListener("click", () => {
     setView(VIEW_IMPORT);
   });
@@ -255,6 +274,9 @@ function bindGlobalEvents() {
     setView(VIEW_LOGIN);
   });
   els.backToStatsBtn.addEventListener("click", () => {
+    setView(VIEW_STATS);
+  });
+  els.backToStatsFromEventsBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
   });
   els.backToStatsFromLoginBtn.addEventListener("click", () => {

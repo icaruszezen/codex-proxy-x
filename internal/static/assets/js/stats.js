@@ -440,7 +440,6 @@ export function createStatsFeature({
     els.placeholder.style.display = show ? "grid" : "none";
     if (show) {
       els.summaryCards.innerHTML = "";
-      renderRecentEvents([]);
       els.tableBody.innerHTML = "";
       els.rowsInfo.textContent = "0 条记录";
       els.pageInfo.textContent = "1 / 1";

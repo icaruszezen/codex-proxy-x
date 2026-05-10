@@ -18,6 +18,7 @@ app
 CLIProxyAPIPlus/
 
 *_test.go
+!internal/auth/ingest_test.go
 
 # IDE
 .idea/

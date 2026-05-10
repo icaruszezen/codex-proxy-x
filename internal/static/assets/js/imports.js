@@ -4,7 +4,9 @@ import { buildAlert, escapeHtml, formatNumber } from "./ui.js";
 const IMPORT_PRECHECK_PAGE_SIZE = 200;
 const IMPORT_MAX_DUPLICATE_PREVIEW = 10;
 const REQUIRED_TOKEN_FIELDS = ["refresh_token", "rk", "access_token", "id_token"];
-const NESTED_TOKEN_FIELDS = ["refresh_token", "rk", "access_token", "id_token"];
+const NESTED_TOKEN_FIELDS = ["refresh_token", "rk", "access_token", "id_token", "account_id", "email", "expired"];
+const NESTED_TOKEN_OBJECTS = ["tokens", "credentials"];
+const SUB2API_METADATA_FIELDS = ["platform", "group_ids"];
 
 export function createImportsFeature({
   els,
@@ -49,16 +51,39 @@ export function createImportsFeature({
     }
   }
 
+  function getImportIdentity(record) {
+    return normalizeImportEmail(record.email) || normalizeImportEmail(record.name);
+  }
+
+  function isSub2APIRecord(record) {
+    return Boolean(record.__sub2api)
+      || isRecord(record.credentials)
+      || SUB2API_METADATA_FIELDS.some(field => Object.prototype.hasOwnProperty.call(record, field));
+  }
+
   function normalizeImportRecord(record, index) {
-    const nestedTokens = isRecord(record.tokens) ? record.tokens : undefined;
-    const { tokens: _tokens, ...rest } = record;
-    const normalizedRecord = { ...rest };
-    if (nestedTokens) {
+    const normalizedRecord = { ...record };
+    const sub2apiLike = isSub2APIRecord(record);
+    NESTED_TOKEN_OBJECTS.forEach(key => {
+      const nestedTokens = isRecord(record[key]) ? record[key] : undefined;
+      delete normalizedRecord[key];
+      if (!nestedTokens) {
+        return;
+      }
       NESTED_TOKEN_FIELDS.forEach(field => {
         if (!hasNonEmptyString(normalizedRecord[field]) && hasNonEmptyString(nestedTokens[field])) {
           normalizedRecord[field] = nestedTokens[field];
         }
       });
+    });
+    if (sub2apiLike) {
+      Object.defineProperty(normalizedRecord, "__sub2api", {
+        value: true,
+        enumerable: false
+      });
+    }
+    if (!hasNonEmptyString(normalizedRecord.email) && hasNonEmptyString(record.name)) {
+      normalizedRecord.email = record.name;
     }
     assertCredentialLikeRecord(normalizedRecord, index);
     return normalizedRecord;
@@ -67,10 +92,14 @@ export function createImportsFeature({
   function buildImportWarnings(records) {
     let missingEmailCount = 0;
     let noRefreshTokenCount = 0;
+    let sub2apiLikeCount = 0;
     records.forEach(record => {
-      const hasEmail = Boolean(normalizeImportEmail(record.email));
+      const hasEmail = Boolean(getImportIdentity(record));
       const hasRefreshToken = hasNonEmptyString(record.refresh_token) || hasNonEmptyString(record.rk);
       const hasFallbackCredential = hasNonEmptyString(record.access_token) || hasNonEmptyString(record.id_token);
+      if (isSub2APIRecord(record)) {
+        sub2apiLikeCount += 1;
+      }
       if (!hasEmail) {
         missingEmailCount += 1;
       }
@@ -79,6 +108,9 @@ export function createImportsFeature({
       }
     });
     const warnings = [];
+    if (sub2apiLikeCount > 0) {
+      warnings.push(`已识别 ${sub2apiLikeCount} 条 sub2api 风格记录；platform/type/group_ids 等元数据不会写入本项目账号池`);
+    }
     if (missingEmailCount > 0) {
       warnings.push(`${missingEmailCount} 条记录缺少 email，可导入，但列表搜索和按邮箱恢复不可用`);
     }
@@ -98,7 +130,7 @@ export function createImportsFeature({
       warnings: buildImportWarnings(records),
       normalizedEmails: Array.from(new Set(
         records
-          .map(record => normalizeImportEmail(record.email))
+          .map(record => getImportIdentity(record))
           .filter(email => Boolean(email))
       ))
     };
@@ -329,7 +361,7 @@ export function createImportsFeature({
   }
 
   async function fetchDuplicateImportEmails(cred, payload, signal) {
-    const skippedRecordsWithoutEmail = payload.records.filter(record => !normalizeImportEmail(record.email)).length;
+    const skippedRecordsWithoutEmail = payload.records.filter(record => !getImportIdentity(record)).length;
     if (payload.normalizedEmails.length === 0) {
       return {
         duplicateEmails: [],
@@ -359,8 +391,9 @@ export function createImportsFeature({
       }
       page += 1;
     }
+    const normalizedEmails = payload.normalizedEmails.filter(email => existingEmails.has(email));
     return {
-      duplicateEmails: payload.normalizedEmails.filter(email => existingEmails.has(email)),
+      duplicateEmails: normalizedEmails,
       skippedRecordsWithoutEmail
     };
   }
