@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.11.0...v1.12.0) (2026-05-10)
+
+
+### ✨ 新功能
+
+* 支持 sub2api 导出文件格式的多账号 JSON 导入，增强解析功能 ([9376650](https://github.com/icaruszezen/codex-proxy-x/commit/93766500b14b52a55b8f1fc16b42126c3f428233))
+* 添加 qmsg 私聊通知功能，支持配置和测试消息推送 ([489c636](https://github.com/icaruszezen/codex-proxy-x/commit/489c636d24c43176dd939f2e40826e2944a9a0e6))
+
 ## [1.11.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.10.1...v1.11.0) (2026-05-05)
 
 
