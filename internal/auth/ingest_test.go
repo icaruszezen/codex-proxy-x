@@ -109,6 +109,51 @@ func TestParseTokenFilePayloadsSub2APICredentials(t *testing.T) {
 	}
 }
 
+func TestParseTokenFilePayloadsSub2APIExportObject(t *testing.T) {
+	body := `{
+	  "exported_at": "2026-05-10T07:11:15.576Z",
+	  "proxies": [],
+	  "accounts": [
+	    {
+	      "name": "wrapped@example.com",
+	      "platform": "openai",
+	      "type": "oauth",
+	      "credentials": {
+	        "access_token": "at_wrapped",
+	        "chatgpt_account_id": "acct_wrapped",
+	        "email": "wrapped@example.com",
+	        "expires_at": 1779261056,
+	        "id_token": "id_wrapped",
+	        "refresh_token": "rt_wrapped"
+	      },
+	      "extra": {
+	        "email": "wrapped@example.com"
+	      }
+	    }
+	  ]
+	}`
+
+	tokens, err := parseTokenFilePayloads([]byte(body))
+	if err != nil {
+		t.Fatalf("parseTokenFilePayloads() error = %v", err)
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("len(tokens) = %d, want 1", len(tokens))
+	}
+	if tokens[0].Email != "wrapped@example.com" {
+		t.Fatalf("tokens[0].Email = %q", tokens[0].Email)
+	}
+	if tokens[0].RefreshToken != "rt_wrapped" {
+		t.Fatalf("tokens[0].RefreshToken = %q", tokens[0].RefreshToken)
+	}
+	if tokens[0].AccountID != "acct_wrapped" {
+		t.Fatalf("tokens[0].AccountID = %q", tokens[0].AccountID)
+	}
+	if tokens[0].Expire != "2026-05-20T07:10:56Z" {
+		t.Fatalf("tokens[0].Expire = %q", tokens[0].Expire)
+	}
+}
+
 func TestParseTokenFilePayloadTopLevelWins(t *testing.T) {
 	body := `{
 	  "email": "top@example.com",

@@ -5,6 +5,12 @@ const IMPORT_PRECHECK_PAGE_SIZE = 200;
 const IMPORT_MAX_DUPLICATE_PREVIEW = 10;
 const REQUIRED_TOKEN_FIELDS = ["refresh_token", "rk", "access_token", "id_token"];
 const NESTED_TOKEN_FIELDS = ["refresh_token", "rk", "access_token", "id_token", "account_id", "email", "expired"];
+const NESTED_TOKEN_FIELD_ALIASES = {
+  chatgpt_account_id: "account_id"
+};
+const NESTED_TOKEN_UNIX_TIME_FIELDS = {
+  expires_at: "expired"
+};
 const NESTED_TOKEN_OBJECTS = ["tokens", "credentials"];
 const SUB2API_METADATA_FIELDS = ["platform", "group_ids"];
 
@@ -57,6 +63,7 @@ export function createImportsFeature({
 
   function isSub2APIRecord(record) {
     return Boolean(record.__sub2api)
+      || isSub2APIExportObject(record)
       || isRecord(record.credentials)
       || SUB2API_METADATA_FIELDS.some(field => Object.prototype.hasOwnProperty.call(record, field));
   }
@@ -73,6 +80,16 @@ export function createImportsFeature({
       NESTED_TOKEN_FIELDS.forEach(field => {
         if (!hasNonEmptyString(normalizedRecord[field]) && hasNonEmptyString(nestedTokens[field])) {
           normalizedRecord[field] = nestedTokens[field];
+        }
+      });
+      Object.entries(NESTED_TOKEN_FIELD_ALIASES).forEach(([sourceField, targetField]) => {
+        if (!hasNonEmptyString(normalizedRecord[targetField]) && hasNonEmptyString(nestedTokens[sourceField])) {
+          normalizedRecord[targetField] = nestedTokens[sourceField];
+        }
+      });
+      Object.entries(NESTED_TOKEN_UNIX_TIME_FIELDS).forEach(([sourceField, targetField]) => {
+        if (!hasNonEmptyString(normalizedRecord[targetField]) && Number(nestedTokens[sourceField]) > 0) {
+          normalizedRecord[targetField] = new Date(Number(nestedTokens[sourceField]) * 1000).toISOString();
         }
       });
     });
@@ -136,18 +153,29 @@ export function createImportsFeature({
     };
   }
 
+  function isSub2APIExportObject(value) {
+    return isRecord(value) && Array.isArray(value.accounts);
+  }
+
+  function normalizeImportRecords(items, sourceLabel = "记录") {
+    if (!Array.isArray(items)) {
+      throw new Error(`${sourceLabel} 必须是数组`);
+    }
+    if (items.length === 0) {
+      throw new Error(`${sourceLabel} 不能为空`);
+    }
+    return items.map((item, index) => {
+      if (!isRecord(item)) {
+        throw new Error(`第 ${index + 1} 条记录不是有效对象`);
+      }
+      return normalizeImportRecord(item, index + 1);
+    });
+  }
+
   function parseJsonPayload(raw) {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      if (parsed.length === 0) {
-        throw new Error("JSON 数组不能为空");
-      }
-      const normalizedRecords = parsed.map((item, index) => {
-        if (!isRecord(item)) {
-          throw new Error(`第 ${index + 1} 条记录不是有效对象`);
-        }
-        return normalizeImportRecord(item, index + 1);
-      });
+      const normalizedRecords = normalizeImportRecords(parsed, "JSON 数组");
       return createValidationResult(
         "json-array",
         JSON.stringify(normalizedRecords, null, 2),
@@ -156,6 +184,15 @@ export function createImportsFeature({
     }
     if (!isRecord(parsed)) {
       throw new Error("JSON 内容必须是对象或数组");
+    }
+    if (isSub2APIExportObject(parsed)) {
+      const normalizedRecords = normalizeImportRecords(parsed.accounts, "sub2api accounts 数组");
+      return createValidationResult(
+        "sub2api-export",
+        JSON.stringify(normalizedRecords, null, 2),
+        normalizedRecords,
+        "json-array"
+      );
     }
     const normalizedRecord = normalizeImportRecord(parsed, 1);
     return createValidationResult(
@@ -219,6 +256,8 @@ export function createImportsFeature({
         return "JSON 对象";
       case "json-array":
         return "JSON 数组";
+      case "sub2api-export":
+        return "sub2api 导出文件";
       default:
         return "NDJSON";
     }

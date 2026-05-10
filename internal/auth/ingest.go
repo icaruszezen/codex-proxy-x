@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -74,6 +75,20 @@ func fillIngestStringIfEmpty(target *string, fields map[string]json.RawMessage, 
 	}
 }
 
+func fillIngestExpireUnixIfEmpty(target *string, fields map[string]json.RawMessage, key string) {
+	if target == nil || strings.TrimSpace(*target) != "" {
+		return
+	}
+	raw, ok := fields[key]
+	if !ok {
+		return
+	}
+	var unixSeconds int64
+	if err := json.Unmarshal(raw, &unixSeconds); err == nil && unixSeconds > 0 {
+		*target = time.Unix(unixSeconds, 0).UTC().Format(time.RFC3339)
+	}
+}
+
 func normalizeTokenFilePayload(tf *TokenFile, fields map[string]json.RawMessage) {
 	if tf == nil || fields == nil {
 		return
@@ -88,8 +103,10 @@ func normalizeTokenFilePayload(tf *TokenFile, fields map[string]json.RawMessage)
 		fillIngestStringIfEmpty(&tf.AccessToken, nested, "access_token")
 		fillIngestStringIfEmpty(&tf.IDToken, nested, "id_token")
 		fillIngestStringIfEmpty(&tf.AccountID, nested, "account_id")
+		fillIngestStringIfEmpty(&tf.AccountID, nested, "chatgpt_account_id")
 		fillIngestStringIfEmpty(&tf.Email, nested, "email")
 		fillIngestStringIfEmpty(&tf.Expire, nested, "expired")
+		fillIngestExpireUnixIfEmpty(&tf.Expire, nested, "expires_at")
 	}
 	fillIngestStringIfEmpty(&tf.Email, fields, "name")
 }
@@ -111,6 +128,40 @@ func parseTokenFilePayload(raw []byte) (TokenFile, error) {
 	return tf, nil
 }
 
+func parseTokenFilePayloadArray(items []json.RawMessage) ([]TokenFile, error) {
+	out := make([]TokenFile, 0, len(items))
+	for i, item := range items {
+		tf, err := parseTokenFilePayload(item)
+		if err != nil {
+			return nil, fmt.Errorf("解析 JSON 数组第 %d 条失败: %w", i+1, err)
+		}
+		out = append(out, tf)
+	}
+	return out, nil
+}
+
+func parseTokenFilePayloadObject(body []byte) ([]TokenFile, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, fmt.Errorf("解析 JSON 对象失败: %w", err)
+	}
+	if rawAccounts, ok := fields["accounts"]; ok {
+		var accounts []json.RawMessage
+		if err := json.Unmarshal(rawAccounts, &accounts); err != nil {
+			return nil, fmt.Errorf("解析 sub2api accounts 数组失败: %w", err)
+		}
+		if len(accounts) == 0 {
+			return nil, fmt.Errorf("sub2api accounts 数组不能为空")
+		}
+		return parseTokenFilePayloadArray(accounts)
+	}
+	one, err := parseTokenFilePayload(body)
+	if err != nil {
+		return nil, fmt.Errorf("解析 JSON 对象失败: %w", err)
+	}
+	return []TokenFile{one}, nil
+}
+
 /**
  * parseTokenFilePayloads 解析请求体：JSON 数组、单个 JSON 对象，或 NDJSON（每行一个对象）
  */
@@ -125,21 +176,9 @@ func parseTokenFilePayloads(body []byte) ([]TokenFile, error) {
 		if err := json.Unmarshal(body, &arr); err != nil {
 			return nil, fmt.Errorf("解析 JSON 数组失败: %w", err)
 		}
-		out := make([]TokenFile, 0, len(arr))
-		for i, item := range arr {
-			tf, err := parseTokenFilePayload(item)
-			if err != nil {
-				return nil, fmt.Errorf("解析 JSON 数组第 %d 条失败: %w", i+1, err)
-			}
-			out = append(out, tf)
-		}
-		return out, nil
+		return parseTokenFilePayloadArray(arr)
 	case '{':
-		one, err := parseTokenFilePayload(body)
-		if err != nil {
-			return nil, fmt.Errorf("解析 JSON 对象失败: %w", err)
-		}
-		return []TokenFile{one}, nil
+		return parseTokenFilePayloadObject(body)
 	default:
 		return parseNDJSONTokenFiles(body)
 	}

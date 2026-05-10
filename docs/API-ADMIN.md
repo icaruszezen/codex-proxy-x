@@ -48,7 +48,7 @@ Authorization: Bearer <与 api-keys 中某一项完全一致>
 1. **单个对象** — 与一个 `*.json` 文件内容相同。  
 2. **JSON 数组** — `[{...}, {...}]`，一次提交多个账号。  
 3. **NDJSON** — 每行一个 JSON 对象；空行与 `#` 开头行忽略。  
-4. **sub2api 多账号 JSON** — 支持从 `credentials` 嵌套对象读取凭据，并用 `name` 作为 `email` 的回退身份。`platform`、`type`、`group_ids` 等 sub2api 元数据会被忽略，不会写入账号池。
+4. **sub2api 多账号 JSON** — 支持从账号对象的 `credentials` 嵌套对象读取凭据，并用 `name` 作为 `email` 的回退身份；也支持 sub2api 导出的顶层包装对象 `{ "exported_at": "...", "proxies": [], "accounts": [...] }`。`platform`、`type`、`group_ids` 等 sub2api 元数据会被忽略，不会写入账号池。
 
 **响应** `200` 且 body 为 JSON，例如：
 
@@ -99,6 +99,15 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/ingest" \
   -H "Authorization: Bearer sk-your-custom-key" \
   -H "Content-Type: application/json" \
   -d '[{"name":"user@example.com","platform":"openai","type":"oauth","group_ids":[1,2],"credentials":{"refresh_token":"rt_xxx"}}]'
+```
+
+**curl 示例（sub2api 导出文件）：**
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/ingest" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{"exported_at":"2026-05-10T07:11:15.576Z","proxies":[],"accounts":[{"name":"user@example.com","platform":"openai","type":"oauth","credentials":{"refresh_token":"rt_xxx"}}]}'
 ```
 
 ### WebSocket：同一 URL
