@@ -209,17 +209,20 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 
 	accountsIngestHandler := h.handleAccountsIngest
 	accountsToggleEnabledHandler := h.handleAccountToggleEnabled
+	accountsDeleteHandler := h.handleAccountDelete
 	qmsgConfigHandler := h.handleQmsgConfig
 	qmsgTestHandler := h.handleQmsgTest
 	if len(h.apiKeys) > 0 {
 		accountsIngestHandler = h.authMiddleware(h.handleAccountsIngest)
 		accountsToggleEnabledHandler = h.authMiddleware(h.handleAccountToggleEnabled)
+		accountsDeleteHandler = h.authMiddleware(h.handleAccountDelete)
 		qmsgConfigHandler = h.authMiddleware(h.handleQmsgConfig)
 		qmsgTestHandler = h.authMiddleware(h.handleQmsgTest)
 	}
 	r.POST("/admin/accounts/ingest", accountsIngestHandler)
 	r.GET("/admin/accounts/ingest", accountsIngestHandler)
 	r.POST("/admin/accounts/toggle-enabled", accountsToggleEnabledHandler)
+	r.POST("/admin/accounts/delete", accountsDeleteHandler)
 	r.GET("/admin/qmsg/config", qmsgConfigHandler)
 	r.PUT("/admin/qmsg/config", qmsgConfigHandler)
 	r.POST("/admin/qmsg/test", qmsgTestHandler)
@@ -964,6 +967,53 @@ func (h *ProxyHandler) handleAccountToggleEnabled(ctx *fasthttp.RequestCtx) {
 		"enabled":        stats.Status != "disabled",
 		"status":         stats.Status,
 		"disable_reason": stats.DisableReason,
+	})
+}
+
+/**
+ * handleAccountDelete POST /admin/accounts/delete
+ * 硬删除单个账号的本地凭据（数据库记录或 JSON 文件），不撤销上游 OAuth Token
+ * 请求体 JSON：{ "email":"..." } 或 { "file_path":"..." }
+ */
+func (h *ProxyHandler) handleAccountDelete(ctx *fasthttp.RequestCtx) {
+	body := ctx.PostBody()
+	if len(body) == 0 {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "请求体不能为空", "type": "invalid_request_error"},
+		})
+		return
+	}
+	var req struct {
+		Email    string `json:"email"`
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "JSON 解析失败", "type": "invalid_request_error"},
+		})
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	filePath := strings.TrimSpace(req.FilePath)
+	if email == "" && filePath == "" {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "请提供 email 或 file_path", "type": "invalid_request_error"},
+		})
+		return
+	}
+
+	result, err := h.manager.RemoveAccountByIdentifier(email, filePath, auth.ReasonManualDelete)
+	if err != nil {
+		writeJSON(ctx, fasthttp.StatusNotFound, map[string]any{
+			"error": map[string]any{"message": err.Error(), "type": "invalid_request_error"},
+		})
+		return
+	}
+	writeJSON(ctx, fasthttp.StatusOK, map[string]any{
+		"email":      result.Email,
+		"file_path":  result.FilePath,
+		"deleted":    true,
+		"pool_total": result.PoolTotal,
 	})
 }
 

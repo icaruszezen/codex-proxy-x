@@ -20,6 +20,7 @@ Authorization: Bearer <与 api-keys 中某一项完全一致>
 | POST | `/recover-auth` | 401 恢复：按邮箱/路径/全部同步刷新；失败可能将凭据重命名为 `*.json.disabled` |
 | POST | `/admin/accounts/ingest` | **导入账号**：HTTP 上传 JSON 填充号池（见下文） |
 | GET 或 POST | `/admin/accounts/ingest` | 同上路径，带 **`Upgrade: websocket`** 时使用 **WebSocket** 导入（见下文） |
+| POST | `/admin/accounts/delete` | **硬删除账号**：从本地号池与持久化存储移除单个账号，不撤销上游 OAuth Token |
 | GET | `/admin/qmsg/config` | 读取 qmsg 私聊通知配置 |
 | PUT | `/admin/qmsg/config` | 保存 qmsg 私聊通知配置，立即生效并写入服务端本地文件 |
 | POST | `/admin/qmsg/test` | 发送 qmsg 测试消息，验证推送通道 |
@@ -124,6 +125,53 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/ingest" \
 - 发送文本 **`ping`** 可收到 `{"type":"pong"}`（便于探活）。
 
 适合脚本分批推送、或避免单次 HTTP body 过大时拆成多帧（每帧仍应是完整可解析的 JSON 片段，而不是把一个 JSON 对象切成多帧）。
+
+---
+
+## 账号删除：`POST /admin/accounts/delete`
+
+用于从当前本地号池中硬删除单个账号。删除会移出内存账号池，并删除本地持久化凭据：数据库模式删除 `codex_accounts` 记录，文件模式删除对应 `*.json` 凭据文件。
+
+注意：该接口不会调用上游 OAuth revoke，不等同于远端登出；如只是临时下线账号，应优先在管理界面使用停用开关。
+
+**请求体：**
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+也可使用 `file_path` 定位账号：
+
+```json
+{
+  "file_path": "auths/user.json"
+}
+```
+
+**成功响应：**
+
+```json
+{
+  "email": "user@example.com",
+  "file_path": "db:acct_xxx",
+  "deleted": true,
+  "pool_total": 99
+}
+```
+
+- `400`：请求体为空、JSON 无效，或未提供 `email`/`file_path`。
+- `404`：当前号池中未找到匹配账号。
+
+**curl 示例：**
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/delete" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com"}'
+```
 
 ---
 

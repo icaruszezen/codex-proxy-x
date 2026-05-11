@@ -289,6 +289,42 @@ export async function requestAccountToggleEnabled(cred, payload, signal) {
   };
 }
 
+export async function requestAccountDelete(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = {};
+  const email = String(payload?.email || "").trim();
+  const filePath = String(payload?.filePath || payload?.file_path || "").trim();
+  if (email) {
+    body.email = email;
+  }
+  if (filePath) {
+    body.file_path = filePath;
+  }
+  if (!body.email && !body.file_path) {
+    throw new Error("缺少可删除的账号标识");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/accounts/delete"), {
+    method: "POST",
+    headers: buildHeaders(cred, {
+      "Content-Type": "application/json"
+    }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    email: String(data?.email || body.email || ""),
+    filePath: String(data?.file_path || body.file_path || ""),
+    deleted: Boolean(data?.deleted),
+    poolTotal: Number(data?.pool_total ?? 0)
+  };
+}
+
 export async function requestQmsgConfig(cred, signal) {
   if (!cred?.apiUrl) {
     throw new Error("请输入 API 地址");

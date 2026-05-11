@@ -1,4 +1,4 @@
-import { isCredentialError, requestAccountToggleEnabled, requestRecoverAuth, requestStatsPage } from "./api.js";
+import { isCredentialError, requestAccountDelete, requestAccountToggleEnabled, requestRecoverAuth, requestStatsPage } from "./api.js";
 import { buildAlert, escapeHtml, formatDate, formatNumber } from "./ui.js";
 
 const CACHE_KEY = "stats_cache_v2";
@@ -152,14 +152,16 @@ const EVENT_REASON_LABELS = {
   restore_probe_failed: "禁用凭据恢复探测失败，已自动删除",
   refresh_http_429: "刷新接口返回 429",
   quota_http_429: "额度接口返回 429",
+  manual_delete: "管理端手动删除",
   empty_access_token: "access_token 为空，已自动删除",
   missing_refresh_token: "refresh_token 为空，已自动删除"
 };
 
-function formatEventActionLabel(action) {
-  const code = String(action || "");
+function formatEventActionLabel(event) {
+  const code = String(event?.action || "");
+  const reasonCode = String(event?.reason_code || "");
   if (code === "remove") {
-    return "自动删除";
+    return reasonCode === "manual_delete" ? "手动删除" : "自动删除";
   }
   if (code === "refresh_disable") {
     return "禁用刷新";
@@ -221,7 +223,8 @@ export function createStatsFeature({
     initialized: false,
     recoveringEmails: new Set(),
     isRecoveringAll: false,
-    togglingEmails: new Set()
+    togglingEmails: new Set(),
+    deletingEmails: new Set()
   };
 
   function safeGetCacheRaw() {
@@ -286,7 +289,8 @@ export function createStatsFeature({
   function updateRecoverAllButton() {
     const hasSingleRecover = state.recoveringEmails.size > 0;
     const hasTogglePending = state.togglingEmails.size > 0;
-    els.recoverAllBtn.disabled = state.isRecoveringAll || hasSingleRecover || hasTogglePending;
+    const hasDeletePending = state.deletingEmails.size > 0;
+    els.recoverAllBtn.disabled = state.isRecoveringAll || hasSingleRecover || hasTogglePending || hasDeletePending;
     els.recoverAllBtn.textContent = state.isRecoveringAll ? "批量恢复中..." : "批量 401 恢复";
   }
 
@@ -340,7 +344,7 @@ export function createStatsFeature({
     els.recentEventsEmpty.classList.add("hidden");
     els.recentEventsList.innerHTML = rows.map(event => {
       const email = String(event?.email || "").trim() || "未知账号";
-      const actionLabel = formatEventActionLabel(event?.action);
+      const actionLabel = formatEventActionLabel(event);
       const actionClass = formatEventActionClass(event?.action);
       const reasonText = formatEventReason(event?.reason_code);
       const metaText = formatEventMeta(event);
@@ -365,15 +369,25 @@ export function createStatsFeature({
     if (!safeEmail) {
       return "";
     }
-    const isRecovering = state.isRecoveringAll || state.recoveringEmails.has(safeEmail);
+    const isBusy = state.isRecoveringAll
+      || state.recoveringEmails.has(safeEmail)
+      || state.togglingEmails.has(safeEmail)
+      || state.deletingEmails.has(safeEmail);
+    const label = state.deletingEmails.has(safeEmail)
+      ? "删除中..."
+      : state.togglingEmails.has(safeEmail)
+        ? "处理中..."
+        : isBusy
+          ? "恢复中..."
+          : "401恢复";
     return `
       <button
         type="button"
         class="ghost row-action"
         data-action="recover-auth"
         data-email="${encodeURIComponent(safeEmail)}"
-        ${isRecovering ? "disabled" : ""}
-      >${isRecovering ? "恢复中..." : "401恢复"}</button>
+        ${isBusy ? "disabled" : ""}
+      >${label}</button>
     `;
   }
 
@@ -385,7 +399,8 @@ export function createStatsFeature({
     const isEnabled = String(row?.status || "") !== "disabled";
     const isBusy = state.isRecoveringAll
       || state.recoveringEmails.has(safeEmail)
-      || state.togglingEmails.has(safeEmail);
+      || state.togglingEmails.has(safeEmail)
+      || state.deletingEmails.has(safeEmail);
     return `
       <label class="enabled-toggle-wrap">
         <input
@@ -398,6 +413,27 @@ export function createStatsFeature({
         />
         <span>${isEnabled ? "启用" : "停用"}</span>
       </label>
+    `;
+  }
+
+  function buildDeleteAction(email) {
+    const safeEmail = String(email || "").trim();
+    if (!safeEmail) {
+      return "";
+    }
+    const isDeleting = state.deletingEmails.has(safeEmail);
+    const isBusy = state.isRecoveringAll
+      || state.recoveringEmails.has(safeEmail)
+      || state.togglingEmails.has(safeEmail)
+      || isDeleting;
+    return `
+      <button
+        type="button"
+        class="ghost row-action danger"
+        data-action="delete-account"
+        data-email="${encodeURIComponent(safeEmail)}"
+        ${isBusy ? "disabled" : ""}
+      >${isDeleting ? "删除中..." : "删除"}</button>
     `;
   }
 
@@ -426,6 +462,7 @@ export function createStatsFeature({
             <span class="account-email">${escapeHtml(email)}</span>
             ${buildEnabledToggle(row)}
             ${buildRecoverAction(email)}
+            ${buildDeleteAction(email)}
           </div>
         `
         : "<span class=\"muted\">--</span>";
@@ -519,7 +556,7 @@ export function createStatsFeature({
 
   async function handleRecoverByEmail(email) {
     const safeEmail = String(email || "").trim();
-    if (!safeEmail || state.isRecoveringAll || state.recoveringEmails.has(safeEmail)) {
+    if (!safeEmail || state.isRecoveringAll || state.recoveringEmails.has(safeEmail) || state.togglingEmails.has(safeEmail) || state.deletingEmails.has(safeEmail)) {
       return;
     }
     const cred = getCredentials();
@@ -546,7 +583,7 @@ export function createStatsFeature({
 
   async function handleToggleEnabled(email, enabled) {
     const safeEmail = String(email || "").trim();
-    if (!safeEmail || state.isRecoveringAll || state.recoveringEmails.has(safeEmail) || state.togglingEmails.has(safeEmail)) {
+    if (!safeEmail || state.isRecoveringAll || state.recoveringEmails.has(safeEmail) || state.togglingEmails.has(safeEmail) || state.deletingEmails.has(safeEmail)) {
       return;
     }
     const cred = getCredentials();
@@ -575,8 +612,45 @@ export function createStatsFeature({
     }
   }
 
+  async function handleDeleteAccount(email) {
+    const safeEmail = String(email || "").trim();
+    if (!safeEmail || state.isRecoveringAll || state.recoveringEmails.has(safeEmail) || state.togglingEmails.has(safeEmail) || state.deletingEmails.has(safeEmail)) {
+      return;
+    }
+    const confirmed = window.confirm(`确定要删除账号 ${safeEmail} 吗？\n\n此操作会从本地账号池和持久化存储中硬删除该账号，无法从管理界面恢复；不会撤销上游 OAuth Token。`);
+    if (!confirmed) {
+      return;
+    }
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials();
+      return;
+    }
+    state.deletingEmails.add(safeEmail);
+    updateRecoverAllButton();
+    renderTable(state.currentRows, state.pagination);
+    try {
+      const response = await requestAccountDelete(cred, { email: safeEmail });
+      setActionState(buildAlert(
+        "success",
+        `账号 ${response.email || safeEmail} 已删除`,
+        escapeHtml(`已从本地账号池移除，当前剩余 ${formatNumber(response.poolTotal)} 个账号。`)
+      ));
+      await refreshAfterRecover({ showLoading: false });
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+      handleRecoverError(`账号 ${safeEmail} 删除失败`, error);
+    } finally {
+      state.deletingEmails.delete(safeEmail);
+      updateRecoverAllButton();
+      renderTable(state.currentRows, state.pagination);
+    }
+  }
+
   async function handleRecoverAll() {
-    if (state.isRecoveringAll || state.recoveringEmails.size > 0 || state.togglingEmails.size > 0) {
+    if (state.isRecoveringAll || state.recoveringEmails.size > 0 || state.togglingEmails.size > 0 || state.deletingEmails.size > 0) {
       return;
     }
     const confirmed = window.confirm("批量 401 恢复会顺序请求后端处理当前账号池中的全部账号，账号较多时可能耗时较长。确定继续吗？");
@@ -703,12 +777,18 @@ export function createStatsFeature({
       if (!(target instanceof HTMLElement)) {
         return;
       }
-      const button = target.closest("[data-action='recover-auth']");
-      if (!(button instanceof HTMLButtonElement)) {
+      const action = target.closest("[data-action]");
+      if (!(action instanceof HTMLButtonElement)) {
         return;
       }
-      const email = button.dataset.email ? decodeURIComponent(button.dataset.email) : "";
-      void handleRecoverByEmail(email);
+      const email = action.dataset.email ? decodeURIComponent(action.dataset.email) : "";
+      if (action.dataset.action === "recover-auth") {
+        void handleRecoverByEmail(email);
+        return;
+      }
+      if (action.dataset.action === "delete-account") {
+        void handleDeleteAccount(email);
+      }
     });
     els.tableBody.addEventListener("change", event => {
       const target = event.target;

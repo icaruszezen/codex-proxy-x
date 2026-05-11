@@ -80,6 +80,7 @@ type TokenFile struct {
 type Account struct {
 	mu                    sync.RWMutex
 	FilePath              string
+	dbID                  int64
 	Token                 TokenData
 	Status                AccountStatus
 	LastError             error
@@ -101,6 +102,7 @@ type Account struct {
 	TotalCompletions      atomic.Int64
 	QuotaInfo             *QuotaInfo
 	QuotaCheckedAt        time.Time
+	deleted               atomic.Bool
 
 	/* 原子状态字段（热路径无锁读取） */
 	atomicStatus     atomic.Int32 /* 存储 AccountStatus 枚举值 */
@@ -157,6 +159,8 @@ const (
 	ReasonQuotaHTTP429 = "quota_http_429"
 	/* ReasonManualDisabled 管理端手动停用 */
 	ReasonManualDisabled = "manual_disabled"
+	/* ReasonManualDelete 管理端手动硬删除本地凭据 */
+	ReasonManualDelete = "manual_delete"
 	/* ReasonQuotaInvalidAfterRefresh OAuth 刷新成功但 wham/usage 返回无效（非 200 且非 429），视为废号 */
 	ReasonQuotaInvalidAfterRefresh = "quota_invalid_after_refresh"
 	/* ReasonRestoreProbeFailed 周期性「禁用凭据恢复」探测中 OAuth/额度不通过，已删除凭据文件 */

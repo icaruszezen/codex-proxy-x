@@ -425,6 +425,16 @@ tr:hover td {
   background: #fffaf0;
 }
 
+.row-action.danger {
+  color: #9f1d1d;
+  background: #fff1f1;
+  border-color: rgba(220, 38, 38, 0.25);
+}
+
+.row-action.danger:hover:not(:disabled) {
+  background: #ffe3e3;
+}
+
 .enabled-toggle-wrap {
   display: inline-flex;
   align-items: center;

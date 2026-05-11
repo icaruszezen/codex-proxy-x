@@ -801,6 +801,7 @@ func accountFromDBRow(id int64, accountID, email, idToken, accessToken, refreshT
 	}
 	acc := &Account{
 		FilePath: key,
+		dbID:     id,
 		Token: TokenData{
 			IDToken:      idToken.String,
 			AccessToken:  accessToken.String,
@@ -979,6 +980,9 @@ func (m *Manager) saveTokenToDB(acc *Account) error {
 	if m.db == nil {
 		return nil
 	}
+	if acc == nil || acc.deleted.Load() {
+		return nil
+	}
 
 	acc.mu.RLock()
 	/* 读取运行时状态：Status、CooldownUntil、DisableReason、LastUsedAt */
@@ -1139,6 +1143,14 @@ func (m *Manager) deleteAccountFromDB(acc *Account) error {
 		return nil
 	}
 	var err error
+	if acc.dbID > 0 {
+		if m.dbDialect == codexdb.DialectPostgres {
+			_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE id=$1`, acc.dbID)
+		} else {
+			_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE id=?`, acc.dbID)
+		}
+		return err
+	}
 	if m.dbDialect == codexdb.DialectPostgres {
 		_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE email=$1 OR account_id=$2`, acc.GetEmail(), acc.GetAccountID())
 	} else {
@@ -1414,16 +1426,21 @@ func (m *Manager) RecentAccountEvents(limit int) []AccountEvent {
  * @param reason - 移除原因
  */
 func (m *Manager) RemoveAccount(acc *Account, reason string) {
+	if acc == nil {
+		return
+	}
 	m.mu.Lock()
 
 	filePath := acc.FilePath
 	email := acc.GetEmail()
 
 	if _, exists := m.accountIndex[filePath]; !exists {
+		acc.deleted.Store(true)
 		m.mu.Unlock()
 		return
 	}
 
+	acc.deleted.Store(true)
 	delete(m.accountIndex, filePath)
 
 	/* 从切片中删除，用末尾覆盖法避免移动大量元素 */
@@ -1471,9 +1488,11 @@ func (m *Manager) DisableAccountByRenamingFile(acc *Account, reason string) {
 	filePath := acc.FilePath
 	email := acc.GetEmail()
 	if _, exists := m.accountIndex[filePath]; !exists {
+		acc.deleted.Store(true)
 		m.mu.Unlock()
 		return
 	}
+	acc.deleted.Store(true)
 	delete(m.accountIndex, filePath)
 	for i, a := range m.accounts {
 		if a.FilePath == filePath {
@@ -1994,6 +2013,9 @@ func (m *Manager) StartSaveWorker(ctx context.Context) {
  * @param acc - 要保存的账号
  */
 func (m *Manager) enqueueSave(acc *Account) {
+	if acc == nil || acc.deleted.Load() || !m.AccountInPool(acc) {
+		return
+	}
 	select {
 	case m.saveQueue <- acc:
 	default:
@@ -2410,6 +2432,12 @@ func mapRecover401FromRefreshOutcome(q QuotaApplyOutcome, email, fp string, refr
 	return r
 }
 
+type AccountDeleteResult struct {
+	Email     string `json:"email"`
+	FilePath  string `json:"file_path,omitempty"`
+	PoolTotal int    `json:"pool_total"`
+}
+
 /**
  * FindAccountByIdentifier 按邮箱或凭据文件路径（完整路径或仅文件名）查找号池中的账号
  */
@@ -2436,6 +2464,23 @@ func (m *Manager) FindAccountByIdentifier(email, filePath string) *Account {
 		}
 	}
 	return nil
+}
+
+func (m *Manager) RemoveAccountByIdentifier(email, filePath, reason string) (AccountDeleteResult, error) {
+	acc := m.FindAccountByIdentifier(email, filePath)
+	if acc == nil {
+		return AccountDeleteResult{}, fmt.Errorf("未找到账号")
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = ReasonManualDelete
+	}
+	result := AccountDeleteResult{
+		Email:    acc.GetEmail(),
+		FilePath: acc.FilePath,
+	}
+	m.RemoveAccount(acc, reason)
+	result.PoolTotal = m.AccountCount()
+	return result, nil
 }
 
 /**
@@ -2872,8 +2917,17 @@ func (m *Manager) refreshAccount(ctx context.Context, acc *Account) {
  * @returns error - 保存失败时返回错误（原文件不受影响）
  */
 func (m *Manager) saveTokenToFile(acc *Account) error {
+	if acc == nil || acc.deleted.Load() {
+		return nil
+	}
 	if m.db != nil {
-		return m.saveTokenToDB(acc)
+		err := m.saveTokenToDB(acc)
+		if acc.deleted.Load() {
+			if cleanupErr := m.deleteAccountFromDB(acc); cleanupErr != nil {
+				log.Errorf("账号 [%s] 删除后清理数据库写回失败: %v", acc.GetEmail(), cleanupErr)
+			}
+		}
+		return err
 	}
 	acc.mu.RLock()
 	manualDisabled := acc.Status == StatusDisabled && acc.DisableReason == ReasonManualDisabled
@@ -2920,6 +2974,11 @@ func (m *Manager) saveTokenToFile(acc *Account) error {
 		/* 重命名失败时清理临时文件 */
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("重命名文件失败: %w", err)
+	}
+	if acc.deleted.Load() {
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("删除后清理写回文件失败: %w", err)
+		}
 	}
 
 	return nil
