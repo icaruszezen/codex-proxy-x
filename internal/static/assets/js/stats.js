@@ -467,16 +467,16 @@ export function createStatsFeature({
         `
         : "<span class=\"muted\">--</span>";
       tr.innerHTML = `
-        <td>${emailCell}</td>
-        <td><span class="status ${statusClass}">${escapeHtml(row.status || "--")}</span>${refreshDisabledBadge}</td>
-        <td>${escapeHtml(row.plan_type || "--")}</td>
-        <td>${formatNumber(row.total_requests)}</td>
-        <td>${formatNumber(row.total_errors)}</td>
-        <td>${formatNumber(usage.input_tokens)}</td>
-        <td>${formatNumber(usage.output_tokens)}</td>
-        <td>${formatDate(row.last_used_at)}</td>
-        <td>${formatDate(row.token_expire)}</td>
-        <td>${row.quota_exhausted ? "已用尽" : "可用"}</td>
+        <td data-label="邮箱">${emailCell}</td>
+        <td data-label="状态"><span class="status ${statusClass}">${escapeHtml(row.status || "--")}</span>${refreshDisabledBadge}</td>
+        <td data-label="套餐">${escapeHtml(row.plan_type || "--")}</td>
+        <td data-label="请求数">${formatNumber(row.total_requests)}</td>
+        <td data-label="错误">${formatNumber(row.total_errors)}</td>
+        <td data-label="输入 Token">${formatNumber(usage.input_tokens)}</td>
+        <td data-label="输出 Token">${formatNumber(usage.output_tokens)}</td>
+        <td data-label="最后使用">${formatDate(row.last_used_at)}</td>
+        <td data-label="Token 过期">${formatDate(row.token_expire)}</td>
+        <td data-label="额度">${row.quota_exhausted ? "已用尽" : "可用"}</td>
       `;
       fragment.appendChild(tr);
     }
