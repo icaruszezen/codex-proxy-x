@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.14.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.13.0...v1.14.0) (2026-05-19)
+
+
+### ✨ 新功能
+
+* 实现非流式请求的 Codex SSE 收集功能，优化响应处理逻辑，支持更高效的错误处理和账号使用记录 ([55cf46a](https://github.com/icaruszezen/codex-proxy-x/commit/55cf46a81c18b770ccbbd89971f564126583d47c))
+* 添加账号硬删除功能，支持通过 API 删除本地账号及持久化存储，更新相关文档和前端逻辑 ([d60e201](https://github.com/icaruszezen/codex-proxy-x/commit/d60e2019570b5463508e17997d2e2fb124b6da50))
+
+
+### 🎨 代码样式
+
+* 优化界面布局 ([b543bbb](https://github.com/icaruszezen/codex-proxy-x/commit/b543bbbdfb86568fa466b61488ebd5b8d2195da0))
+
 ## [1.13.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.12.0...v1.13.0) (2026-05-10)
 
 
