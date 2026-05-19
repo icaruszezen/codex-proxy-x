@@ -94,6 +94,13 @@ func (e *Executor) SetDropPartialImage(v bool) {
 	e.dropPartialImage = v
 }
 
+func accountEmail(account *auth.Account) string {
+	if account == nil {
+		return ""
+	}
+	return account.GetEmail()
+}
+
 /**
  * NewExecutor 创建新的 Codex 执行器（仅用于 /responses 对话转发）
  * 出站 Dial/Transport/Client 不设超时，避免用户长对话或 SSE 被掐断；健康检查、刷新、额度等走 auth 包独立 Client。
@@ -801,76 +808,41 @@ func (e *Executor) ExecuteStream(ctx context.Context, rc RetryConfig, requestBod
  */
 func (e *Executor) ExecuteNonStream(ctx context.Context, rc RetryConfig, requestBody []byte, model string) ([]byte, error) {
 	startTotal := time.Now()
-	convertStart := time.Now()
-	body, baseModel, isImage := thinking.ApplyThinking(requestBody, model)
-	codexBody := translator.ConvertOpenAIRequestToCodex(baseModel, body, true, isImage)
-	convertDur := time.Since(convertStart)
-	apiURL := e.baseURL + "/responses"
 	reverseToolMap := translator.BuildReverseToolNameMap(requestBody)
-	emptyRetryMax := rc.EmptyRetryMax
-	if emptyRetryMax < 0 {
-		emptyRetryMax = 0
+
+	collected, err := e.CollectCodexResponsesSSE(ctx, rc, requestBody, model)
+	if err != nil {
+		return nil, err
 	}
-	excludedForEmpty := make(map[string]bool)
+	data := collected.Data
+	account := collected.Account
 
-	for emptyAttempt := 0; emptyAttempt <= emptyRetryMax; emptyAttempt++ {
-		rcExcl := MergeRetryConfigExcluded(rc, excludedForEmpty)
-		sendStart := time.Now()
-		httpResp, account, attempts, err := e.sendWithRetry(ctx, rcExcl, model, apiURL, codexBody, false)
-		sendDur := time.Since(sendStart)
-		if err != nil {
-			return nil, err
+	if completedEvent, ok := NormalizeCompletedEventFromSSE(data); ok {
+		resStr, hasOutput := translator.ConvertNonStreamResponse(completedEvent, reverseToolMap)
+		if (!hasOutput || resStr == "") && len(data) > 0 {
+			resStr, hasOutput = translator.ConvertStreamSSEToNonStreamResponse(data, collected.BaseModel, reverseToolMap)
 		}
-
-		data, readErr := io.ReadAll(httpResp.Body)
-		_ = httpResp.Body.Close()
-
-		var result []byte
-		gotValid := false
-		if completedEvent, ok := extractCompletedResponseEvent(data); ok {
-			collectedItems := collectAggregatableItemsFromSSE(data)
-			if len(collectedItems) > 0 {
-				if respRaw := gjson.GetBytes(completedEvent, "response"); respRaw.Exists() {
-					merged := mergeAggregatedItemsIntoResponse([]byte(respRaw.Raw), collectedItems)
-					completedEvent, _ = sjson.SetRawBytes(completedEvent, "response", merged)
-				}
+		if hasOutput && resStr != "" {
+			usage := gjson.Get(resStr, "usage")
+			if usage.Exists() && account != nil {
+				account.RecordUsage(
+					usage.Get("prompt_tokens").Int(),
+					usage.Get("completion_tokens").Int(),
+					usage.Get("total_tokens").Int(),
+				)
 			}
-			resStr, hasOutput := translator.ConvertNonStreamResponse(completedEvent, reverseToolMap)
-			if hasOutput && resStr != "" {
-				usage := gjson.GetBytes(completedEvent, "response.usage")
-				if usage.Exists() {
-					account.RecordUsage(
-						usage.Get("input_tokens").Int(),
-						usage.Get("output_tokens").Int(),
-						usage.Get("total_tokens").Int(),
-					)
-				}
-				result = []byte(resStr)
-				gotValid = true
+			if account != nil {
+				account.RecordSuccess()
 			}
+			log.Infof("req summary nonstream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v collect=%v total=%v lines=%d", collected.BaseModel, accountEmail(account), collected.Attempts, collected.ConvertDur, collected.SendDur, collected.CollectDur, time.Since(startTotal), collected.Lines)
+			return []byte(resStr), nil
 		}
+	}
 
-		if gotValid && len(result) > 0 {
-			account.RecordSuccess()
-			log.Infof("req summary nonstream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", baseModel, account.GetEmail(), attempts, convertDur, sendDur, time.Since(startTotal))
-			return result, nil
-		}
-		/* 空回答或读错误时标记账号失败，防止下一个请求继续选择该账号 */
+	if account != nil {
 		account.RecordFailure()
-		excludedForEmpty[account.FilePath] = true
-		if readErr != nil {
-			if isRetryableUpstreamReadErr(readErr) && emptyAttempt < emptyRetryMax {
-				log.Warnf("nonstream 读取上游失败，换号重试 (%d/%d) account=%s: %v", emptyAttempt+1, emptyRetryMax+1, account.GetEmail(), wrapReadErr(readErr))
-				continue
-			}
-			log.Infof("req summary nonstream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (ERR)", baseModel, account.GetEmail(), attempts, convertDur, sendDur, time.Since(startTotal))
-			return nil, fmt.Errorf("读取响应失败: %w", wrapReadErr(readErr))
-		}
-		if emptyAttempt < emptyRetryMax {
-			log.Warnf("非流式空返回，换号重试 (account=%s attempt=%d/%d)", account.GetEmail(), emptyAttempt+1, emptyRetryMax+1)
-		}
 	}
-	log.Infof("req summary nonstream (empty after %d tries) total=%v", emptyRetryMax+1, time.Since(startTotal))
+	log.Infof("req summary nonstream (empty after stream aggregation) model=%s account=%s attempts=%d total=%v lines=%d", collected.BaseModel, accountEmail(account), collected.Attempts, time.Since(startTotal), collected.Lines)
 	return nil, ErrEmptyResponse
 }
 
@@ -916,71 +888,42 @@ func (e *Executor) ExecuteResponsesStream(ctx context.Context, rc RetryConfig, r
  */
 func (e *Executor) ExecuteResponsesNonStream(ctx context.Context, rc RetryConfig, requestBody []byte, model string) ([]byte, error) {
 	startTotal := time.Now()
-	convertStart := time.Now()
-	body, baseModel, isImage := thinking.ApplyThinking(requestBody, model)
-	codexBody := translator.ConvertOpenAIRequestToCodex(baseModel, body, true, isImage)
-	convertDur := time.Since(convertStart)
-	apiURL := e.baseURL + "/responses"
-
-	readRounds := 1 + rc.EmptyRetryMax
-	if readRounds < 2 {
-		readRounds = 2
+	collected, err := e.CollectCodexResponsesSSE(ctx, rc, requestBody, model)
+	if err != nil {
+		return nil, err
 	}
-	if rc.EmptyRetryMax < 0 {
-		readRounds = 2
-	}
-	excluded := make(map[string]bool)
-	sendStart := time.Now()
+	data := collected.Data
+	account := collected.Account
 
-	for round := 0; round < readRounds; round++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		rcExcl := MergeRetryConfigExcluded(rc, excluded)
-		httpResp, account, attempts, err := e.sendWithRetry(ctx, rcExcl, model, apiURL, codexBody, false)
-		if err != nil {
-			return nil, err
-		}
-		sendDur := time.Since(sendStart)
-
-		data, readErr := io.ReadAll(httpResp.Body)
-		_ = httpResp.Body.Close()
-
-		if resp, ok := extractCompletedResponseObject(data); ok {
-			usage := gjson.GetBytes(resp, "usage")
-			if usage.Exists() {
-				account.RecordUsage(
-					usage.Get("input_tokens").Int(),
-					usage.Get("output_tokens").Int(),
-					usage.Get("total_tokens").Int(),
-				)
+	if completedEvent, ok := NormalizeCompletedEventFromSSE(data); ok {
+		respRaw := gjson.GetBytes(completedEvent, "response")
+		if !respRaw.Exists() {
+			if account != nil {
+				account.RecordFailure()
 			}
+			return nil, fmt.Errorf("未收到 response.completed.response 对象")
+		}
+		resp := []byte(respRaw.Raw)
+		usage := gjson.GetBytes(resp, "usage")
+		if usage.Exists() && account != nil {
+			account.RecordUsage(
+				usage.Get("input_tokens").Int(),
+				usage.Get("output_tokens").Int(),
+				usage.Get("total_tokens").Int(),
+			)
+		}
+		if account != nil {
 			account.RecordSuccess()
-			log.Infof("req summary responses-nonstream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", baseModel, account.GetEmail(), attempts, convertDur, sendDur, time.Since(startTotal))
-			collectedItems := collectAggregatableItemsFromSSE(data)
-			return mergeAggregatedItemsIntoResponse(resp, collectedItems), nil
 		}
-
-		if readErr != nil {
-			account.RecordFailure()
-			if isRetryableUpstreamReadErr(readErr) && round+1 < readRounds {
-				excluded[account.FilePath] = true
-				log.Warnf("responses-nonstream 读取上游失败，换号重试 (%d/%d): %v", round+1, readRounds, wrapReadErr(readErr))
-				continue
-			}
-			log.Infof("req summary responses-nonstream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (ERR)", baseModel, account.GetEmail(), attempts, convertDur, sendDur, time.Since(startTotal))
-			return nil, fmt.Errorf("读取响应失败: %w", wrapReadErr(readErr))
-		}
-		account.RecordFailure()
-		if round+1 < readRounds {
-			excluded[account.FilePath] = true
-			log.Warnf("responses-nonstream 未收到 response.completed，换号重试 (%d/%d) account=%s", round+1, readRounds, account.GetEmail())
-			continue
-		}
-		log.Infof("req summary responses-nonstream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (no completed)", baseModel, account.GetEmail(), attempts, convertDur, sendDur, time.Since(startTotal))
-		return nil, fmt.Errorf("未收到 response.completed 事件")
+		log.Infof("req summary responses-nonstream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v collect=%v total=%v lines=%d", collected.BaseModel, accountEmail(account), collected.Attempts, collected.ConvertDur, collected.SendDur, collected.CollectDur, time.Since(startTotal), collected.Lines)
+		return resp, nil
 	}
-	return nil, fmt.Errorf("读取响应失败")
+
+	if account != nil {
+		account.RecordFailure()
+	}
+	log.Infof("req summary responses-nonstream model=%s account=%s attempts=%d total=%v (no completed)", collected.BaseModel, accountEmail(account), collected.Attempts, time.Since(startTotal))
+	return nil, fmt.Errorf("未收到 response.completed 事件")
 }
 
 /* isAggregatableOutputItem 判定一个 SSE 中间事件 response.output_item.done 的 item 是否需要在非流式聚合阶段补回 response.output。
@@ -1062,6 +1005,187 @@ func mergeAggregatedItemsIntoResponse(respJSON []byte, items [][]byte) []byte {
 	}
 	return respJSON
 }
+
+func responseHasMeaningfulOutput(respJSON []byte) bool {
+	output := gjson.GetBytes(respJSON, "output")
+	if !output.IsArray() {
+		return false
+	}
+	for _, item := range output.Array() {
+		switch item.Get("type").String() {
+		case "message":
+			if content := item.Get("content"); content.IsArray() {
+				for _, part := range content.Array() {
+					if part.Get("text").String() != "" {
+						return true
+					}
+				}
+			}
+		case "function_call":
+			return true
+		case "image_generation_call":
+			if item.Get("result").String() != "" {
+				return true
+			}
+		case "reasoning", "reasoning_text":
+			if item.Get("text").String() != "" || item.Get("summary").Exists() || item.Get("content").Exists() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mergeStreamDeltasIntoResponse(respJSON []byte, sse []byte) []byte {
+	if responseHasMeaningfulOutput(respJSON) {
+		return respJSON
+	}
+	var contentBuilder strings.Builder
+	var reasoningBuilder strings.Builder
+	var rawItems [][]byte
+	seenItemIDs := make(map[string]bool)
+	rawHasText := false
+	rawHasReasoning := false
+	rawHasImage := false
+	reasoningDeltaByItem := make(map[string]string)
+	seenReasoningSummaryDelta := false
+
+	for _, line := range bytes.Split(sse, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		jsonData := bytes.TrimSpace(line[5:])
+		if len(jsonData) == 0 || bytes.Equal(jsonData, []byte("[DONE]")) {
+			continue
+		}
+		root := gjson.ParseBytes(jsonData)
+		switch root.Get("type").String() {
+		case "response.output_text.delta":
+			contentBuilder.WriteString(root.Get("delta").String())
+		case "response.reasoning_summary_text.delta":
+			if s := root.Get("delta").String(); s != "" {
+				seenReasoningSummaryDelta = true
+				reasoningBuilder.WriteString(s)
+			}
+		case "response.reasoning_summary_text.done":
+			if !seenReasoningSummaryDelta {
+				reasoningBuilder.WriteString(root.Get("text").String())
+			}
+		case "response.reasoning.delta", "response.reasoning_text.delta":
+			itemID := root.Get("item_id").String()
+			if itemID == "" {
+				itemID = fmt.Sprintf("_idx:%d", root.Get("output_index").Int())
+			}
+			delta := root.Get("delta").String()
+			reasoningDeltaByItem[itemID] += delta
+			reasoningBuilder.WriteString(delta)
+		case "response.reasoning_text.done":
+			full := root.Get("text").String()
+			itemID := root.Get("item_id").String()
+			if itemID == "" {
+				itemID = fmt.Sprintf("_idx:%d", root.Get("output_index").Int())
+			}
+			acc := reasoningDeltaByItem[itemID]
+			if acc == "" {
+				reasoningBuilder.WriteString(full)
+			} else if strings.HasPrefix(full, acc) && len(full) > len(acc) {
+				reasoningBuilder.WriteString(full[len(acc):])
+			} else if full != acc {
+				reasoningBuilder.WriteString(full)
+			}
+		case "response.content_part.added":
+			part := root.Get("part")
+			if part.Get("type").String() == "reasoning_text" {
+				reasoningBuilder.WriteString(part.Get("text").String())
+			}
+		case "response.output_item.done":
+			item := root.Get("item")
+			if !item.Exists() {
+				continue
+			}
+			t := item.Get("type").String()
+			if t != "message" && t != "function_call" && t != "reasoning" && t != "reasoning_text" && t != "image_generation_call" {
+				continue
+			}
+			id := item.Get("id").String()
+			if id != "" && seenItemIDs[id] {
+				continue
+			}
+			itemCopy := make([]byte, len(item.Raw))
+			copy(itemCopy, item.Raw)
+			rawItems = append(rawItems, itemCopy)
+			switch t {
+			case "message":
+				if content := item.Get("content"); content.IsArray() {
+					for _, part := range content.Array() {
+						if part.Get("type").String() == "output_text" && part.Get("text").String() != "" {
+							rawHasText = true
+							break
+						}
+					}
+				}
+			case "function_call":
+				// 函数调用完整 item 已加入 rawItems，无需再由 delta 合成。
+			case "reasoning", "reasoning_text":
+				rawHasReasoning = true
+			case "image_generation_call":
+				rawHasImage = item.Get("result").String() != ""
+			}
+			if id != "" {
+				seenItemIDs[id] = true
+			}
+		}
+	}
+
+	if !gjson.GetBytes(respJSON, "output").IsArray() {
+		respJSON, _ = sjson.SetRawBytes(respJSON, "output", []byte("[]"))
+	}
+	for _, raw := range rawItems {
+		respJSON, _ = sjson.SetRawBytes(respJSON, "output.-1", raw)
+	}
+	if contentBuilder.Len() > 0 && !rawHasText && !rawHasImage {
+		msg := `{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]}`
+		msg, _ = sjson.Set(msg, "content.0.text", contentBuilder.String())
+		respJSON, _ = sjson.SetRawBytes(respJSON, "output.-1", []byte(msg))
+	}
+	if reasoningBuilder.Len() > 0 && !rawHasReasoning {
+		reasoning := `{"type":"reasoning","content":[{"type":"reasoning_text","text":""}]}`
+		reasoning, _ = sjson.Set(reasoning, "content.0.text", reasoningBuilder.String())
+		respJSON, _ = sjson.SetRawBytes(respJSON, "output.-1", []byte(reasoning))
+	}
+	return respJSON
+}
+
+// NormalizeCompletedEventFromSSE 提取 response.completed，并用中间 SSE 事件补齐可能为空的 response.output。
+func NormalizeCompletedEventFromSSE(body []byte) ([]byte, bool) {
+	completedEvent, ok := extractCompletedResponseEvent(body)
+	if !ok {
+		return nil, false
+	}
+	respRaw := gjson.GetBytes(completedEvent, "response")
+	if !respRaw.Exists() {
+		return completedEvent, true
+	}
+	merged := mergeAggregatedItemsIntoResponse([]byte(respRaw.Raw), collectAggregatableItemsFromSSE(body))
+	merged = mergeStreamDeltasIntoResponse(merged, body)
+	completedEvent, _ = sjson.SetRawBytes(completedEvent, "response", merged)
+	return completedEvent, true
+}
+
+// NormalizeCodexSSEForNonStream 提取 response.completed，并用中间 SSE 事件补齐可能为空的 response.output，返回单帧 SSE。
+func NormalizeCodexSSEForNonStream(body []byte) []byte {
+	completedEvent, ok := NormalizeCompletedEventFromSSE(body)
+	if !ok {
+		return body
+	}
+	out := make([]byte, 0, len(completedEvent)+8)
+	out = append(out, []byte("data: ")...)
+	out = append(out, completedEvent...)
+	out = append(out, '\n', '\n')
+	return out
+}
+
 func extractCompletedResponseEvent(body []byte) ([]byte, bool) {
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 {

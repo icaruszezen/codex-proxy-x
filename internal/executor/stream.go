@@ -268,6 +268,164 @@ func (e *Executor) OpenCodexResponsesStream(ctx context.Context, rc RetryConfig,
 	return s, nil
 }
 
+// CollectedCodexSSE 是下游非流式请求复用上游流式通道后，在内存中收集到的完整 Codex SSE。
+type CollectedCodexSSE struct {
+	Data       []byte
+	Account    *auth.Account
+	Attempts   int
+	BaseModel  string
+	ConvertDur time.Duration
+	SendDur    time.Duration
+	Lines      int
+	CollectDur time.Duration
+}
+
+// CollectCodexResponsesSSE 打开上游 /responses SSE，缓存直到 response.completed 后返回，不向下游写入任何字节。
+func (e *Executor) CollectCodexResponsesSSE(ctx context.Context, rc RetryConfig, requestBody []byte, model string) (*CollectedCodexSSE, error) {
+	bridges := CodexStreamOpenBridgeMax(rc.MaxRetry)
+	var lastErr error
+	for b := 0; b < bridges; b++ {
+		openCtx := ctx
+		if b > 0 {
+			openCtx = context.Background()
+		}
+		s, err := e.OpenCodexResponsesStream(openCtx, rc, requestBody, model)
+		if err != nil {
+			lastErr = err
+			if b < bridges-1 && IsRetryableOpenCodexError(err) {
+				log.Warnf("codex nonstream 聚合 open 全量重连 %d/%d: %v", b+1, bridges, err)
+				continue
+			}
+			return nil, err
+		}
+		collected, err := s.CollectUntilCompleted(context.Background())
+		if err == nil {
+			return collected, nil
+		}
+		lastErr = err
+		if b >= bridges-1 || !IsRetryableStreamPumpForBridge(err) {
+			return nil, err
+		}
+		log.Warnf("codex nonstream 聚合 pump 全量重连 %d/%d: %v", b+1, bridges, err)
+	}
+	return nil, lastErr
+}
+
+// CollectUntilCompleted 读取当前上游 SSE 到 response.completed；若尚未返回给客户端，可在失败或空响应时换号重连。
+func (s *CodexResponsesStream) CollectUntilCompleted(ctx context.Context) (*CollectedCodexSSE, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	collectStart := time.Now()
+	var lastErr error
+	totalLines := 0
+
+	for round := 0; round < s.pumpRounds; round++ {
+		if ctx.Err() != nil {
+			if s.body != nil {
+				_ = s.body.Close()
+			}
+			return nil, ctx.Err()
+		}
+
+		var buf bytes.Buffer
+		scanner := bufio.NewScanner(s.body)
+		scanner.Buffer(make([]byte, scannerInitSize), scannerMaxSize)
+		completed := false
+		localLines := 0
+		firstType := ""
+		lastType := ""
+
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			localLines++
+			totalLines++
+			if s.debugUpstreamStream {
+				ae := ""
+				if s.account != nil {
+					ae = s.account.GetEmail()
+				}
+				logUpstreamStreamChunk("nonstream_collect_line", s.BaseModel, ae, line)
+			}
+			buf.Write(line)
+			buf.WriteByte('\n')
+
+			trimmed := bytes.TrimSpace(line)
+			if !bytes.HasPrefix(trimmed, []byte("data:")) {
+				continue
+			}
+			rawJSON := bytes.TrimSpace(trimmed[len("data:"):])
+			if len(rawJSON) == 0 || bytes.Equal(rawJSON, []byte("[DONE]")) {
+				continue
+			}
+			dataType := gjson.GetBytes(rawJSON, "type").String()
+			if dataType != "" {
+				if firstType == "" {
+					firstType = dataType
+				}
+				lastType = dataType
+			}
+			if dataType == "response.completed" {
+				completed = true
+				break
+			}
+		}
+
+		scanErr := scanner.Err()
+		if completed {
+			if s.body != nil {
+				_ = s.body.Close()
+			}
+			return &CollectedCodexSSE{
+				Data:       append([]byte(nil), buf.Bytes()...),
+				Account:    s.account,
+				Attempts:   s.Attempts,
+				BaseModel:  s.BaseModel,
+				ConvertDur: s.ConvertDur,
+				SendDur:    s.SendDur,
+				Lines:      totalLines,
+				CollectDur: time.Since(collectStart),
+			}, nil
+		}
+
+		if s.body != nil {
+			_ = s.body.Close()
+		}
+		if scanErr != nil {
+			lastErr = wrapReadErr(scanErr)
+		} else if buf.Len() == 0 {
+			lastErr = fmt.Errorf("%w: responses sse 0 bytes", ErrEmptyResponse)
+		} else {
+			lastErr = fmt.Errorf("%w: 未收到 response.completed 事件 first_type=%q last_type=%q lines=%d", ErrEmptyResponse, firstType, lastType, localLines)
+		}
+
+		if s.account != nil {
+			s.account.RecordFailure()
+		}
+		if round >= s.pumpRounds-1 || s.reopenFn == nil || !PumpShouldReopenNoClientBytes(lastErr) {
+			return nil, lastErr
+		}
+		if s.account != nil && s.account.FilePath != "" {
+			s.reopenExcluded[s.account.FilePath] = true
+		}
+		newBody, newMeta, rerr := s.reopenFn(ctx)
+		if rerr != nil {
+			return nil, rerr
+		}
+		failedEmail := ""
+		if s.account != nil {
+			failedEmail = s.account.GetEmail()
+		}
+		log.Warnf("nonstream 聚合未得到 completed，换号重试 (%d/%d) account=%s: %v", round+1, s.pumpRounds, failedEmail, lastErr)
+		s.account = newMeta.Account
+		s.Attempts += newMeta.Attempts
+		s.SendDur = newMeta.SendDur
+		s.body = newBody
+		s.reverseTools = newMeta.ReverseTools
+	}
+	return nil, lastErr
+}
+
 // UpstreamBody 返回当前上游响应体，由调用方在读完后 Close（与 PumpChatCompletion 的 defer 语义一致）。
 func (s *CodexResponsesStream) UpstreamBody() io.ReadCloser {
 	if s == nil {

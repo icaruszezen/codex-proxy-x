@@ -187,22 +187,13 @@ func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, rc executor
  * @returns error - 执行失败时返回错误
  */
 func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, rc executor.RetryConfig, openaiBody []byte, model string) error {
-	rawResp, account, err := h.executor.ExecuteRawCodexStream(ctx, rc, openaiBody, model)
+	collected, err := h.executor.CollectCodexResponsesSSE(ctx, rc, openaiBody, model)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if rawResp.Body != nil {
-			_ = rawResp.Body.Close()
-		}
-	}()
 
-	data, err := io.ReadAll(rawResp.Body)
-	if err != nil {
-		return fmt.Errorf("读取响应失败: %w", err)
-	}
-
-	result := translator.ConvertCodexFullSSEToClaudeResponseWithMeta(ctx, data, model)
+	normalized := executor.NormalizeCodexSSEForNonStream(collected.Data)
+	result := translator.ConvertCodexFullSSEToClaudeResponseWithMeta(ctx, normalized, model)
 	if !result.FoundCompleted || result.JSON == "" {
 		return fmt.Errorf("未收到 response.completed 事件")
 	}
@@ -210,7 +201,9 @@ func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, rc execu
 		return executor.ErrEmptyResponse
 	}
 
-	account.RecordSuccess()
+	if collected.Account != nil {
+		collected.Account.RecordSuccess()
+	}
 	ctx.Response.Header.Set("Content-Type", "application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody([]byte(result.JSON))

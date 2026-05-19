@@ -439,6 +439,155 @@ func BuildChatCompletionStreamUsageOnlyChunk(state *StreamState) string {
 }
 
 /**
+ * ConvertStreamSSEToNonStreamResponse 将上游 Codex SSE 流聚合为 OpenAI Chat Completions 非流式 JSON。
+ * 用于 response.completed.response.output 为空但流式 delta 正常的场景。
+ */
+func ConvertStreamSSEToNonStreamResponse(data []byte, model string, reverseToolMap map[string]string) (string, bool) {
+	state := NewStreamState(model)
+	var contentBuilder strings.Builder
+	var reasoningBuilder strings.Builder
+	type toolCallAgg struct {
+		ID        string
+		Type      string
+		Name      string
+		Arguments string
+	}
+	toolCalls := make(map[int]*toolCallAgg)
+	var toolOrder []int
+	ensureToolCall := func(index int) *toolCallAgg {
+		if index < 0 {
+			index = len(toolOrder)
+		}
+		if tc := toolCalls[index]; tc != nil {
+			return tc
+		}
+		tc := &toolCallAgg{Type: "function"}
+		toolCalls[index] = tc
+		toolOrder = append(toolOrder, index)
+		return tc
+	}
+
+	finishReason := ""
+	usageExists := false
+	var usageInput, usageOutput, usageTotal int64
+	for _, rawLine := range bytes.Split(data, []byte("\n")) {
+		line := bytes.TrimSpace(rawLine)
+		if len(line) == 0 || bytes.Equal(line, []byte("data: [DONE]")) {
+			continue
+		}
+		chunks := ConvertStreamChunk(context.Background(), line, state, reverseToolMap, false)
+		for _, chunk := range chunks {
+			root := gjson.Parse(chunk)
+			choice := root.Get("choices.0")
+			if v := choice.Get("delta.content"); v.Exists() {
+				if s := v.String(); s != "" {
+					contentBuilder.WriteString(s)
+				}
+			}
+			if v := choice.Get("delta.reasoning_content"); v.Exists() {
+				if s := v.String(); s != "" {
+					reasoningBuilder.WriteString(s)
+				}
+			}
+			if arr := choice.Get("delta.tool_calls"); arr.IsArray() {
+				for _, rawTC := range arr.Array() {
+					idx := int(rawTC.Get("index").Int())
+					tc := ensureToolCall(idx)
+					if v := rawTC.Get("id"); v.Exists() && v.String() != "" {
+						tc.ID = v.String()
+					}
+					if v := rawTC.Get("type"); v.Exists() && v.String() != "" {
+						tc.Type = v.String()
+					}
+					if v := rawTC.Get("function.name"); v.Exists() && v.String() != "" {
+						tc.Name = v.String()
+					}
+					if v := rawTC.Get("function.arguments"); v.Exists() {
+						tc.Arguments += v.String()
+					}
+				}
+			}
+			if v := choice.Get("finish_reason"); v.Exists() && v.String() != "" {
+				finishReason = v.String()
+			}
+			if usage := root.Get("usage"); usage.Exists() {
+				usageExists = true
+				usageInput = usage.Get("prompt_tokens").Int()
+				usageOutput = usage.Get("completion_tokens").Int()
+				usageTotal = usage.Get("total_tokens").Int()
+			}
+		}
+	}
+
+	if state.UsageInput > 0 || state.UsageOutput > 0 || state.UsageTotal > 0 {
+		usageExists = true
+		usageInput = state.UsageInput
+		usageOutput = state.UsageOutput
+		usageTotal = state.UsageTotal
+	}
+
+	hasOutput := contentBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(toolOrder) > 0
+	if !hasOutput {
+		return "", false
+	}
+	if finishReason == "" {
+		if len(toolOrder) > 0 {
+			finishReason = "tool_calls"
+		} else {
+			finishReason = "stop"
+		}
+	}
+
+	tpl := `{"id":"","object":"chat.completion","created":0,"model":"","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null}]}`
+	if state.ResponseID != "" {
+		tpl, _ = sjson.Set(tpl, "id", state.ResponseID)
+	}
+	created := state.CreatedAt
+	if created <= 0 {
+		created = time.Now().Unix()
+	}
+	tpl, _ = sjson.Set(tpl, "created", created)
+	outModel := state.Model
+	if outModel == "" {
+		outModel = model
+	}
+	tpl, _ = sjson.Set(tpl, "model", outModel)
+	if content := contentBuilder.String(); content != "" {
+		tpl, _ = sjson.Set(tpl, "choices.0.message.content", content)
+	}
+	if reasoning := reasoningBuilder.String(); reasoning != "" {
+		tpl, _ = sjson.Set(tpl, "choices.0.message.reasoning_content", reasoning)
+	}
+	if len(toolOrder) > 0 {
+		tpl, _ = sjson.SetRaw(tpl, "choices.0.message.tool_calls", `[]`)
+		for _, idx := range toolOrder {
+			tc := toolCalls[idx]
+			if tc == nil {
+				continue
+			}
+			raw := `{"id":"","type":"function","function":{"name":"","arguments":""}}`
+			raw, _ = sjson.Set(raw, "id", tc.ID)
+			if tc.Type != "" {
+				raw, _ = sjson.Set(raw, "type", tc.Type)
+			}
+			raw, _ = sjson.Set(raw, "function.name", tc.Name)
+			raw, _ = sjson.Set(raw, "function.arguments", tc.Arguments)
+			tpl, _ = sjson.SetRaw(tpl, "choices.0.message.tool_calls.-1", raw)
+		}
+	}
+	tpl, _ = sjson.Set(tpl, "choices.0.finish_reason", finishReason)
+	if usageExists {
+		if usageTotal <= 0 && (usageInput > 0 || usageOutput > 0) {
+			usageTotal = usageInput + usageOutput
+		}
+		tpl, _ = sjson.Set(tpl, "usage.prompt_tokens", usageInput)
+		tpl, _ = sjson.Set(tpl, "usage.completion_tokens", usageOutput)
+		tpl, _ = sjson.Set(tpl, "usage.total_tokens", usageTotal)
+	}
+	return tpl, true
+}
+
+/**
  * ConvertNonStreamResponse 将 Codex 非流式响应转换为 OpenAI Chat Completions 格式
  *
  * @param rawJSON - Codex 完整响应 JSON（response.completed 事件的 data 部分）
@@ -616,7 +765,8 @@ func ConvertNonStreamResponse(rawJSON []byte, reverseToolMap map[string]string) 
 
 	/* finish_reason */
 	if resp.Get("status").String() == "completed" {
-		if gjson.Get(tpl, "choices.0.message.tool_calls").Exists() {
+		toolCalls := gjson.Get(tpl, "choices.0.message.tool_calls")
+		if toolCalls.IsArray() && len(toolCalls.Array()) > 0 {
 			tpl, _ = sjson.Set(tpl, "choices.0.finish_reason", "tool_calls")
 		} else {
 			tpl, _ = sjson.Set(tpl, "choices.0.finish_reason", "stop")
