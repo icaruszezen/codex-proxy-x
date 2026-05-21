@@ -78,8 +78,9 @@
 
 | 配置项                         | 默认值   | 说明 |
 | --------------------------- | ----- | --- |
-| `enable-model-suffix-fast` | `true` | 是否允许模型名中的 `-fast` 子参数；关闭后，请求携带该后缀会返回 400，且 `/v1/models` 不再枚举相关变体。 |
-| `enable-model-suffix-1m`   | `true` | 是否允许模型名中的 `-1m` 子参数；关闭后，请求携带该后缀会返回 400，且 `/v1/models` 不再枚举相关变体。 |
+| `enable-model-suffix-fast`  | `true` | 是否允许模型名中的 `-fast` 子参数；关闭后，请求携带该后缀会返回 400，且 `/v1/models` 不再枚举相关变体。 |
+| `enable-model-suffix-1m`    | `true` | 是否允许模型名中的 `-1m` 子参数；关闭后，请求携带该后缀会返回 400，且 `/v1/models` 不再枚举相关变体。 |
+| `enable-model-suffix-image` | `true` | 是否允许模型名中的 `-image` 子参数；`/v1/images/generations` 内部使用该能力调用 `image_generation`。 |
 
 
 ## 健康检查与账号恢复

@@ -147,6 +147,14 @@ curl http://localhost:8080/v1/responses \
   -d '{"model": "gpt-5.4", "input": [{"role": "user", "content": "Hello!"}], "stream": true}'
 ```
 
+**Image Generations**
+```bash
+curl http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -d '{"model": "gpt-image-2", "prompt": "A cute robot painting a sunset", "response_format": "b64_json"}'
+```
+
 **Claude Messages API**
 ```bash
 curl http://localhost:8080/v1/messages \
@@ -160,8 +168,9 @@ curl http://localhost:8080/v1/messages \
 在模型名中使用连字符后缀控制思考级别；还可选下列**子参数**（可与思考后缀任意顺序拼接，解析时先去掉 `-fast` 再去掉 `-1m`，最后解析思考后缀）：
 
 - **`-fast`**：上游 `service_tier` 固定为 `priority`。
+- **`-image`**：注入上游 `image_generation` 工具；`/v1/images/generations` 会默认使用 `gpt-image-2` 并内部走该模式。
 
-可通过配置项 `enable-model-suffix-fast`、`enable-model-suffix-1m` 分别控制这两个子参数；关闭后，请求中使用对应后缀会返回 `400`，且 `/v1/models` 不再枚举对应变体。
+可通过配置项 `enable-model-suffix-fast`、`enable-model-suffix-1m`、`enable-model-suffix-image` 分别控制这些子参数；关闭后，请求中使用对应后缀会返回 `400`，且 `/v1/models` 不再枚举对应变体。
 
 **子参数与请求体的关系**：只要在模型名里写了对应子参数，代理会**强制覆盖**上游请求中的同名字段，**不会**再采用客户端在 JSON 里传的值。未写该子参数时，这些字段若客户端有传则**透传**。
 
@@ -197,6 +206,7 @@ curl http://localhost:8080/v1/messages \
 | POST | `/v1/chat/completions` | Chat Completions（流式/非流式） |
 | POST | `/v1/responses` | Responses API（流式/非流式） |
 | POST | `/v1/responses/compact` | Responses Compact API（对话历史压缩） |
+| POST | `/v1/images/generations` | Image Generations（返回 `b64_json`） |
 | POST | `/v1/messages` | Claude Messages API（流式/非流式） |
 | GET | `/v1/models` | 模型列表 |
 | GET | `/health` | 健康检查 |

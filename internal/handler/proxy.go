@@ -185,6 +185,12 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	}
 	r.POST("/v1/messages", apiMessages)
 
+	apiImages := h.handleImageGenerations
+	if len(h.apiKeys) > 0 {
+		apiImages = h.authMiddleware(h.handleImageGenerations)
+	}
+	r.POST("/v1/images/generations", apiImages)
+
 	apiModels := h.handleModels
 	if len(h.apiKeys) > 0 {
 		apiModels = h.authMiddleware(h.handleModels)
@@ -341,6 +347,16 @@ func expandModelSubvariantIDs(id string, enableFast bool, enable1M bool, enableI
 
 func (h *ProxyHandler) handleModels(ctx *fasthttp.RequestCtx) {
 	models := make([]map[string]interface{}, 0, 800)
+	models = append(models, map[string]interface{}{"id": defaultImageGenerationModel, "object": "model", "owned_by": "openai"})
+	if h.enableModelFast {
+		models = append(models, map[string]interface{}{"id": defaultImageGenerationModel + "-fast", "object": "model", "owned_by": "openai"})
+	}
+	if h.enableModelImage {
+		models = append(models, map[string]interface{}{"id": defaultImageGenerationModel + "-image", "object": "model", "owned_by": "openai"})
+		if h.enableModelFast {
+			models = append(models, map[string]interface{}{"id": defaultImageGenerationModel + "-image-fast", "object": "model", "owned_by": "openai"})
+		}
+	}
 	for _, e := range modelList {
 		ids := make([]string, 0, 1+len(e.suffixes))
 		ids = append(ids, e.base)
