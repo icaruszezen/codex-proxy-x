@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.14.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.14.0...v1.14.1) (2026-05-21)
+
+
+### 🐛 错误修复
+
+* 设置默认图片请求路径的模型为 gpt-5.5-image ([534a618](https://github.com/icaruszezen/codex-proxy-x/commit/534a6180f59c24d4a9001e249d4f884228cd05d3))
+* 支持/v1/images/generations ([a829d44](https://github.com/icaruszezen/codex-proxy-x/commit/a829d44796737e34dc88a86ec397c6aa6ee65859))
+
 ## [1.14.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.13.0...v1.14.0) (2026-05-19)
 
 
