@@ -152,7 +152,7 @@ curl http://localhost:8080/v1/responses \
 curl http://localhost:8080/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sk-your-custom-key" \
-  -d '{"model": "gpt-image-2", "prompt": "A cute robot painting a sunset", "response_format": "b64_json"}'
+  -d '{"model": "gpt-5.5-image", "prompt": "A cute robot painting a sunset", "response_format": "b64_json"}'
 ```
 
 **Claude Messages API**
@@ -168,7 +168,7 @@ curl http://localhost:8080/v1/messages \
 在模型名中使用连字符后缀控制思考级别；还可选下列**子参数**（可与思考后缀任意顺序拼接，解析时先去掉 `-fast` 再去掉 `-1m`，最后解析思考后缀）：
 
 - **`-fast`**：上游 `service_tier` 固定为 `priority`。
-- **`-image`**：注入上游 `image_generation` 工具；`/v1/images/generations` 会默认使用 `gpt-image-2` 并内部走该模式。
+- **`-image`**：注入上游 `image_generation` 工具；`/v1/images/generations` 会默认使用 `gpt-5.5-image` 并内部走该模式。
 
 可通过配置项 `enable-model-suffix-fast`、`enable-model-suffix-1m`、`enable-model-suffix-image` 分别控制这些子参数；关闭后，请求中使用对应后缀会返回 `400`，且 `/v1/models` 不再枚举对应变体。
 

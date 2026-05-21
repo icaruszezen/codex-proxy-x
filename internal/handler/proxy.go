@@ -347,16 +347,6 @@ func expandModelSubvariantIDs(id string, enableFast bool, enable1M bool, enableI
 
 func (h *ProxyHandler) handleModels(ctx *fasthttp.RequestCtx) {
 	models := make([]map[string]interface{}, 0, 800)
-	models = append(models, map[string]interface{}{"id": defaultImageGenerationModel, "object": "model", "owned_by": "openai"})
-	if h.enableModelFast {
-		models = append(models, map[string]interface{}{"id": defaultImageGenerationModel + "-fast", "object": "model", "owned_by": "openai"})
-	}
-	if h.enableModelImage {
-		models = append(models, map[string]interface{}{"id": defaultImageGenerationModel + "-image", "object": "model", "owned_by": "openai"})
-		if h.enableModelFast {
-			models = append(models, map[string]interface{}{"id": defaultImageGenerationModel + "-image-fast", "object": "model", "owned_by": "openai"})
-		}
-	}
 	for _, e := range modelList {
 		ids := make([]string, 0, 1+len(e.suffixes))
 		ids = append(ids, e.base)

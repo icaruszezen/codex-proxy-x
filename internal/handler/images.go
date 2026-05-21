@@ -11,7 +11,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-const defaultImageGenerationModel = "gpt-image-2"
+const defaultImageGenerationModel = "gpt-5.5-image"
 
 type imageGenerationParams struct {
 	Prompt         string
@@ -140,7 +140,7 @@ func normalizeImageGenerationModels(model string) (requestModel string, executor
 		default:
 			requestModel = strings.TrimSpace(base)
 			if requestModel == "" {
-				requestModel = defaultImageGenerationModel
+				requestModel = strings.TrimSuffix(defaultImageGenerationModel, "-image")
 			}
 			executorModel = requestModel + "-image"
 			if hasFast {
