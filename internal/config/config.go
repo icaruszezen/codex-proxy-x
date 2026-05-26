@@ -34,6 +34,8 @@ const DefaultDisabledRecoveryIntervalSec = 3600
 type Config struct {
 	Listen     string `yaml:"listen"`
 	AuthDir    string `yaml:"auth-dir"`
+	/* StandbyAuthDir 备用账号池目录；留空则默认为 <auth-dir>-standby（同级目录，避免落入主池扫描范围） */
+	StandbyAuthDir string `yaml:"standby-auth-dir"`
 	DBEnabled  bool   `yaml:"db-enabled"`
 	DBDriver   string `yaml:"db-driver"`
 	DBHost     string `yaml:"db-host"`
@@ -252,6 +254,7 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) Sanitize() {
 	c.Listen = strings.TrimSpace(c.Listen)
 	c.AuthDir = strings.TrimSpace(c.AuthDir)
+	c.StandbyAuthDir = strings.TrimSpace(c.StandbyAuthDir)
 	c.ProxyURL = strings.TrimSpace(c.ProxyURL)
 	c.BackendDomain = strings.TrimSpace(c.BackendDomain)
 	c.BackendResolveAddress = strings.TrimSpace(c.BackendResolveAddress)
@@ -263,6 +266,13 @@ func (c *Config) Sanitize() {
 	}
 	if c.AuthDir == "" && !c.DBEnabled {
 		c.AuthDir = "./auths"
+	}
+	if c.StandbyAuthDir == "" {
+		base := c.AuthDir
+		if base == "" {
+			base = "./auths"
+		}
+		c.StandbyAuthDir = base + "-standby"
 	}
 	if c.DBDriver == "" {
 		c.DBDriver = "postgres"

@@ -24,6 +24,7 @@ import (
 	"codex-proxy/internal/executor"
 	"codex-proxy/internal/handler"
 	"codex-proxy/internal/notify"
+	"codex-proxy/internal/standby"
 	"codex-proxy/internal/static"
 
 	"github.com/fasthttp/router"
@@ -218,6 +219,19 @@ func main() {
 	quotaChecker := auth.NewQuotaChecker(cfg.BaseURL, cfg.ProxyURL, cfg.QuotaCheckConcurrency, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, time.Duration(cfg.QuotaCheckCacheTTLSec)*time.Second)
 	manager.SetPostRefreshQuotaChecker(quotaChecker)
 
+	/* 备用账号池：与主池存储隔离；磁盘模式独立目录、DB 模式按 is_standby 列过滤 */
+	var standbySelector auth.Selector
+	if cfg.Selector == "quota-first" {
+		standbySelector = auth.NewQuotaFirstSelector()
+	} else {
+		standbySelector = auth.NewRoundRobinSelector()
+	}
+	standbyManager := auth.NewStandbyManager(cfg.StandbyAuthDir, db, cfg.ProxyURL, cfg.RefreshInterval, standbySelector, cfg.EnableHTTP2, managerOpts)
+	standbyManager.SetRefreshConcurrency(cfg.RefreshConcurrency)
+	standbyManager.SetAccountEventNotifier(qmsgService)
+	standbyManager.SetPostRefreshQuotaChecker(quotaChecker)
+	log.Infof("备用账号池目录: %s（仅在主池失效时自动启用）", cfg.StandbyAuthDir)
+
 	/* 启动后台任务 */
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -268,29 +282,42 @@ func main() {
 		log.Infof("账号加载完成: 共 %d 个，耗时 %v", manager.AccountCount(), time.Since(loadStart).Round(time.Millisecond))
 	}
 
+	/* 加载备用账号池（与主池策略保持一致；忽略错误以兼容首次部署没有目录的情况） */
+	if loadErr := standbyManager.LoadAccounts(); loadErr != nil {
+		log.Warnf("加载备用账号失败（首次部署可忽略）: %v", loadErr)
+	} else {
+		log.Infof("备用账号加载完成: 共 %d 个", standbyManager.AccountCount())
+	}
+
 	/* 启动异步磁盘写入工作器（将 Token 写盘从刷新 goroutine 解耦） */
 	manager.StartSaveWorker(ctx)
+	/* 备用池仅启动 SaveWorker（导入需要持久化），不启动 RefreshLoop / HealthChecker / DisabledRecovery */
+	standbyManager.StartSaveWorker(ctx)
+
+	/* 备用池协调器：先试主池、失败回退备用池；激活/停用切换时发 qmsg 通知 */
+	standbyCtrl := standby.New(manager, standbyManager, quotaChecker, qmsgService)
+	standbyCtrl.Start(ctx)
 
 	/* 启动后台 Token 刷新 */
 	go manager.StartRefreshLoop(ctx)
 
-	/* 延迟启动健康检查（在服务启动后异步进行，避免影响启动速度） */
+	/* 健康检查器：主池循环按配置间隔启动；备用池手动按钮共享同一实例（HealthChecker stateless） */
+	healthChecker := auth.NewHealthChecker(
+		cfg.BaseURL, cfg.ProxyURL,
+		cfg.HealthCheckInterval,
+		cfg.HealthCheckMaxFailures,
+		cfg.HealthCheckConcurrency,
+		cfg.HealthCheckStartDelay,
+		cfg.HealthCheckBatchSize,
+		cfg.HealthCheckReqTimeout,
+		cfg.EnableHTTP2,
+		cfg.BackendDomain,
+		cfg.BackendResolveAddress,
+	)
 	if cfg.HealthCheckInterval > 0 {
 		go func() {
 			// 等待服务完全启动
 			time.Sleep(2 * time.Second)
-			healthChecker := auth.NewHealthChecker(
-				cfg.BaseURL, cfg.ProxyURL,
-				cfg.HealthCheckInterval,
-				cfg.HealthCheckMaxFailures,
-				cfg.HealthCheckConcurrency,
-				cfg.HealthCheckStartDelay,
-				cfg.HealthCheckBatchSize,
-				cfg.HealthCheckReqTimeout,
-				cfg.EnableHTTP2,
-				cfg.BackendDomain,
-				cfg.BackendResolveAddress,
-			)
 			healthChecker.StartLoop(ctx, manager)
 		}()
 	}
@@ -344,7 +371,7 @@ func main() {
 	r := router.New()
 	r.GET("/assets/{filepath:*}", static.HandleAsset)
 	r.HEAD("/assets/{filepath:*}", static.HandleAsset)
-	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, static.IndexHTML)
+	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, standbyCtrl, healthChecker, static.IndexHTML)
 	proxyHandler.RegisterRoutes(r)
 	handler.SetupLoginRoutes(r, cfg.AuthDir, cfg.OAuthCallbackPort, cfg.OAuthNoBrowser, cfg.EnableCodexLogin, manager)
 

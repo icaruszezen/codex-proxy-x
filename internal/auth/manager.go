@@ -112,6 +112,8 @@ type Manager struct {
 	quotaPrecheck bool
 	/* disableAuth401Remove true 时 401 刷新失败不删号/不禁用，只冷却 */
 	disableAuth401Remove bool
+	/* isStandby 当前 Manager 实例是否为备用池；DB 模式下用于 INSERT/SELECT/DELETE 按池过滤 */
+	isStandby bool
 }
 
 /**
@@ -124,6 +126,18 @@ type Manager struct {
  * @returns *Manager - 账号管理器实例
  */
 func NewManager(authDir string, db *sql.DB, proxyURL string, refreshInterval int, selector Selector, enableHTTP2 bool, opts *ManagerOptions) *Manager {
+	return newManagerInternal(authDir, db, proxyURL, refreshInterval, selector, enableHTTP2, opts, false)
+}
+
+/**
+ * NewStandbyManager 创建备用账号池管理器
+ * 与 NewManager 同签名，仅设置 isStandby=true，所有 DB 操作按 is_standby=1 过滤
+ */
+func NewStandbyManager(authDir string, db *sql.DB, proxyURL string, refreshInterval int, selector Selector, enableHTTP2 bool, opts *ManagerOptions) *Manager {
+	return newManagerInternal(authDir, db, proxyURL, refreshInterval, selector, enableHTTP2, opts, true)
+}
+
+func newManagerInternal(authDir string, db *sql.DB, proxyURL string, refreshInterval int, selector Selector, enableHTTP2 bool, opts *ManagerOptions, isStandby bool) *Manager {
 	if selector == nil {
 		selector = NewRoundRobinSelector()
 	}
@@ -144,6 +158,7 @@ func NewManager(authDir string, db *sql.DB, proxyURL string, refreshInterval int
 		refreshSingleTimeoutSec: defaultRefreshSingleTimeoutSec,
 		saveQueue:               make(chan *Account, 4096),
 		stopCh:                  make(chan struct{}),
+		isStandby:               isStandby,
 	}
 	if opts != nil {
 		m.dbDialect = opts.DBDialect
@@ -285,8 +300,8 @@ func (m *Manager) prepareDBStatements() error {
 	switch m.dbDialect {
 	case codexdb.DialectMySQL:
 		s := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
 ON DUPLICATE KEY UPDATE
 	email = VALUES(email),
 	account_id = VALUES(account_id),
@@ -302,6 +317,7 @@ ON DUPLICATE KEY UPDATE
 	last_used_at = VALUES(last_used_at),
 	refresh_disabled = VALUES(refresh_disabled),
 	refresh_disabled_reason = VALUES(refresh_disabled_reason),
+	is_standby = VALUES(is_standby),
 	updated_at = VALUES(updated_at)`
 		stmt, err := m.db.Prepare(s)
 		if err != nil {
@@ -312,8 +328,8 @@ ON DUPLICATE KEY UPDATE
 		return nil
 	case codexdb.DialectSQLite:
 		s1 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(account_id) DO UPDATE SET
 	email = excluded.email,
 	id_token = excluded.id_token,
@@ -328,6 +344,7 @@ ON CONFLICT(account_id) DO UPDATE SET
 	last_used_at = excluded.last_used_at,
 	refresh_disabled = excluded.refresh_disabled,
 	refresh_disabled_reason = excluded.refresh_disabled_reason,
+	is_standby = excluded.is_standby,
 	updated_at = CURRENT_TIMESTAMP`
 		stmt, err := m.db.Prepare(s1)
 		if err != nil {
@@ -335,8 +352,8 @@ ON CONFLICT(account_id) DO UPDATE SET
 		}
 		m.saveTokenStmt = stmt
 		s2 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(email) DO UPDATE SET
 	account_id = excluded.account_id,
 	id_token = excluded.id_token,
@@ -351,6 +368,7 @@ ON CONFLICT(email) DO UPDATE SET
 	last_used_at = excluded.last_used_at,
 	refresh_disabled = excluded.refresh_disabled,
 	refresh_disabled_reason = excluded.refresh_disabled_reason,
+	is_standby = excluded.is_standby,
 	updated_at = CURRENT_TIMESTAMP`
 		stmtEm, err := m.db.Prepare(s2)
 		if err != nil {
@@ -360,8 +378,8 @@ ON CONFLICT(email) DO UPDATE SET
 		return nil
 	default:
 		s1 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
 ON CONFLICT (account_id) DO UPDATE SET
 	email = EXCLUDED.email,
 	id_token = EXCLUDED.id_token,
@@ -376,6 +394,7 @@ ON CONFLICT (account_id) DO UPDATE SET
 	last_used_at = EXCLUDED.last_used_at,
 	refresh_disabled = EXCLUDED.refresh_disabled,
 	refresh_disabled_reason = EXCLUDED.refresh_disabled_reason,
+	is_standby = EXCLUDED.is_standby,
 	updated_at = NOW()`
 		stmt, err := m.db.Prepare(s1)
 		if err != nil {
@@ -383,8 +402,8 @@ ON CONFLICT (account_id) DO UPDATE SET
 		}
 		m.saveTokenStmt = stmt
 		s2 := `
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
 ON CONFLICT (email) DO UPDATE SET
 	account_id = EXCLUDED.account_id,
 	id_token = EXCLUDED.id_token,
@@ -399,6 +418,7 @@ ON CONFLICT (email) DO UPDATE SET
 	last_used_at = EXCLUDED.last_used_at,
 	refresh_disabled = EXCLUDED.refresh_disabled,
 	refresh_disabled_reason = EXCLUDED.refresh_disabled_reason,
+	is_standby = EXCLUDED.is_standby,
 	updated_at = NOW()`
 		stmtEm, err := m.db.Prepare(s2)
 		if err != nil {
@@ -849,14 +869,16 @@ func (m *Manager) loadAccountsFromDBSlice(ctx context.Context, offset, limit int
 	if m.db == nil {
 		return nil, 0, nil
 	}
-	base := `SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts ORDER BY id`
+	var base string
 	var rows *sql.Rows
 	var err error
 	switch m.dbDialect {
 	case codexdb.DialectPostgres:
-		rows, err = m.db.QueryContext(ctx, base+` LIMIT $1 OFFSET $2`, limit, offset)
+		base = `SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts WHERE is_standby = $1 ORDER BY id`
+		rows, err = m.db.QueryContext(ctx, base+` LIMIT $2 OFFSET $3`, m.isStandby, limit, offset)
 	default:
-		rows, err = m.db.QueryContext(ctx, base+` LIMIT ? OFFSET ?`, limit, offset)
+		base = `SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts WHERE is_standby = ? ORDER BY id`
+		rows, err = m.db.QueryContext(ctx, base+` LIMIT ? OFFSET ?`, m.isStandby, limit, offset)
 	}
 	if err != nil {
 		return nil, 0, err
@@ -886,7 +908,14 @@ func (m *Manager) loadAccountsFromDB() error {
 	if m.db == nil {
 		return nil
 	}
-	rows, err := m.db.Query(`SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts ORDER BY id`)
+	var rows *sql.Rows
+	var err error
+	switch m.dbDialect {
+	case codexdb.DialectPostgres:
+		rows, err = m.db.Query(`SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts WHERE is_standby = $1 ORDER BY id`, m.isStandby)
+	default:
+		rows, err = m.db.Query(`SELECT id, account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason FROM codex_accounts WHERE is_standby = ? ORDER BY id`, m.isStandby)
+	}
 	if err != nil {
 		return err
 	}
@@ -1007,6 +1036,7 @@ func (m *Manager) saveTokenToDB(acc *Account) error {
 		lastUsedAt,
 		refreshDisabled,
 		refreshDisabledReason,
+		m.isStandby,
 	}
 	acc.mu.RUnlock()
 
@@ -1037,8 +1067,8 @@ func (m *Manager) saveTokenToDB(acc *Account) error {
 	switch m.dbDialect {
 	case codexdb.DialectMySQL:
 		_, err := m.db.Exec(`
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
 ON DUPLICATE KEY UPDATE
 	email = VALUES(email),
 	account_id = VALUES(account_id),
@@ -1054,12 +1084,13 @@ ON DUPLICATE KEY UPDATE
 	last_used_at = VALUES(last_used_at),
 	refresh_disabled = VALUES(refresh_disabled),
 	refresh_disabled_reason = VALUES(refresh_disabled_reason),
+	is_standby = VALUES(is_standby),
 	updated_at = VALUES(updated_at)`, args...)
 		return err
 	case codexdb.DialectSQLite:
 		_, err := m.db.Exec(`
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(account_id) DO UPDATE SET
 	email = excluded.email,
 	id_token = excluded.id_token,
@@ -1074,12 +1105,13 @@ ON CONFLICT(account_id) DO UPDATE SET
 	last_used_at = excluded.last_used_at,
 	refresh_disabled = excluded.refresh_disabled,
 	refresh_disabled_reason = excluded.refresh_disabled_reason,
+	is_standby = excluded.is_standby,
 	updated_at = CURRENT_TIMESTAMP`, args...)
 		return err
 	default:
 		_, err := m.db.Exec(`
-INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+INSERT INTO codex_accounts (account_id,email,id_token,access_token,refresh_token,expire,plan_type,last_refresh,status,cooldown_until,disable_reason,last_used_at,refresh_disabled,refresh_disabled_reason,is_standby,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
 ON CONFLICT (account_id) DO UPDATE SET
 	email = EXCLUDED.email,
 	id_token = EXCLUDED.id_token,
@@ -1094,6 +1126,7 @@ ON CONFLICT (account_id) DO UPDATE SET
 	last_used_at = EXCLUDED.last_used_at,
 	refresh_disabled = EXCLUDED.refresh_disabled,
 	refresh_disabled_reason = EXCLUDED.refresh_disabled_reason,
+	is_standby = EXCLUDED.is_standby,
 	updated_at = NOW()`, args...)
 		return err
 	}
@@ -1109,9 +1142,9 @@ func (m *Manager) accountExists(acc *Account) (bool, error) {
 		var one int
 		var err error
 		if m.dbDialect == codexdb.DialectPostgres {
-			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE email=$1 LIMIT 1`, email).Scan(&one)
+			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE email=$1 AND is_standby=$2 LIMIT 1`, email, m.isStandby).Scan(&one)
 		} else {
-			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE email=? LIMIT 1`, email).Scan(&one)
+			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE email=? AND is_standby=? LIMIT 1`, email, m.isStandby).Scan(&one)
 		}
 		if err == nil {
 			return true, nil
@@ -1124,9 +1157,9 @@ func (m *Manager) accountExists(acc *Account) (bool, error) {
 		var one int
 		var err error
 		if m.dbDialect == codexdb.DialectPostgres {
-			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE account_id=$1 LIMIT 1`, aid).Scan(&one)
+			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE account_id=$1 AND is_standby=$2 LIMIT 1`, aid, m.isStandby).Scan(&one)
 		} else {
-			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE account_id=? LIMIT 1`, aid).Scan(&one)
+			err = m.db.QueryRow(`SELECT 1 FROM codex_accounts WHERE account_id=? AND is_standby=? LIMIT 1`, aid, m.isStandby).Scan(&one)
 		}
 		if err == nil {
 			return true, nil
@@ -1145,16 +1178,16 @@ func (m *Manager) deleteAccountFromDB(acc *Account) error {
 	var err error
 	if acc.dbID > 0 {
 		if m.dbDialect == codexdb.DialectPostgres {
-			_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE id=$1`, acc.dbID)
+			_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE id=$1 AND is_standby=$2`, acc.dbID, m.isStandby)
 		} else {
-			_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE id=?`, acc.dbID)
+			_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE id=? AND is_standby=?`, acc.dbID, m.isStandby)
 		}
 		return err
 	}
 	if m.dbDialect == codexdb.DialectPostgres {
-		_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE email=$1 OR account_id=$2`, acc.GetEmail(), acc.GetAccountID())
+		_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE (email=$1 OR account_id=$2) AND is_standby=$3`, acc.GetEmail(), acc.GetAccountID(), m.isStandby)
 	} else {
-		_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE email=? OR account_id=?`, acc.GetEmail(), acc.GetAccountID())
+		_, err = m.db.Exec(`DELETE FROM codex_accounts WHERE (email=? OR account_id=?) AND is_standby=?`, acc.GetEmail(), acc.GetAccountID(), m.isStandby)
 	}
 	return err
 }
@@ -1862,6 +1895,30 @@ func (m *Manager) SetAccountEventNotifier(service *notify.Service) {
 		return
 	}
 	m.accountEventNotifier.Store(service)
+}
+
+/**
+ * IsStandby 当前 Manager 是否为备用池实例
+ */
+func (m *Manager) IsStandby() bool {
+	if m == nil {
+		return false
+	}
+	return m.isStandby
+}
+
+/**
+ * RunHealthCheckOnce 触发一次性健康检查（SSE 流式进度），供 UI 手动按钮使用
+ * 与 StartLoop 不同，不启动循环，仅扫描当前号池全部账号一次
+ */
+func (m *Manager) RunHealthCheckOnce(ctx context.Context, hc *HealthChecker) <-chan ProgressEvent {
+	if hc == nil {
+		ch := make(chan ProgressEvent, 1)
+		ch <- ProgressEvent{Type: "done", Message: "未配置 HealthChecker", Duration: "0s"}
+		close(ch)
+		return ch
+	}
+	return hc.RunOnceWithProgress(ctx, m)
 }
 
 func (m *Manager) effectiveQuotaAfterRefresh(qcArg *QuotaChecker) *QuotaChecker {

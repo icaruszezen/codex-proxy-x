@@ -414,3 +414,196 @@ export async function testQmsgChannel(cred, message, signal) {
   }
   return await res.json();
 }
+
+/* ========== 备用账号池 ========== */
+
+export async function requestStandbyState(cred, options = {}, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const params = {};
+  const query = String(options.query || "").trim();
+  const status = String(options.status || "all").trim().toLowerCase();
+  if (query) params.q = query;
+  if (status && status !== "all") params.status = status;
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/state", params), {
+    method: "GET",
+    headers: buildHeaders(cred),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    active: Boolean(data?.active),
+    primaryTotal: Number(data?.primary_total ?? 0),
+    standbyTotal: Number(data?.standby_total ?? 0),
+    note: String(data?.note || ""),
+    summary: data?.summary || {},
+    accounts: Array.isArray(data?.accounts) ? data.accounts : []
+  };
+}
+
+export async function requestStandbyIngest(cred, payload, signal) {
+  const submitFormat = payload?.submitFormat || payload?.format;
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/accounts/ingest"), {
+    method: "POST",
+    headers: buildHeaders(cred, {
+      "Content-Type": getImportContentType(submitFormat)
+    }),
+    body: payload.text,
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    added: Number(data?.added ?? 0),
+    updated: Number(data?.updated ?? 0),
+    failed: Number(data?.failed ?? 0),
+    poolTotal: Number(data?.pool_total ?? data?.poolTotal ?? 0),
+    errors: Array.isArray(data?.errors) ? data.errors : []
+  };
+}
+
+export async function requestStandbyExport(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const emails = Array.isArray(payload?.emails)
+    ? payload.emails.map(email => String(email || "").trim()).filter(Boolean)
+    : [];
+  if (!emails.length) {
+    throw new Error("请至少选择一个账号");
+  }
+  const format = String(payload?.format || "sub2api-export").trim() || "sub2api-export";
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/accounts/export"), {
+    method: "POST",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ emails, format }),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    format: String(data?.format || format),
+    exported: Number(data?.exported ?? 0),
+    notFound: Array.isArray(data?.not_found) ? data.not_found : [],
+    failed: Array.isArray(data?.failed) ? data.failed : [],
+    data: data?.data
+  };
+}
+
+export async function requestStandbyDelete(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = {};
+  const email = String(payload?.email || "").trim();
+  const filePath = String(payload?.filePath || payload?.file_path || "").trim();
+  if (email) body.email = email;
+  if (filePath) body.file_path = filePath;
+  if (!body.email && !body.file_path) {
+    throw new Error("缺少可删除的账号标识");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/accounts/delete"), {
+    method: "POST",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    email: String(data?.email || body.email || ""),
+    filePath: String(data?.file_path || body.file_path || ""),
+    deleted: Boolean(data?.deleted),
+    poolTotal: Number(data?.pool_total ?? 0)
+  };
+}
+
+export async function requestStandbyToggleEnabled(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = { enabled: Boolean(payload?.enabled) };
+  const email = String(payload?.email || "").trim();
+  const filePath = String(payload?.filePath || payload?.file_path || "").trim();
+  if (email) body.email = email;
+  if (filePath) body.file_path = filePath;
+  if (!body.email && !body.file_path) {
+    throw new Error("缺少可切换状态的账号标识");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/accounts/toggle-enabled"), {
+    method: "POST",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    email: String(data?.email || body.email || ""),
+    enabled: Boolean(data?.enabled),
+    status: String(data?.status || ""),
+    disableReason: String(data?.disable_reason || "")
+  };
+}
+
+/**
+ * requestStandbyHealthCheck 触发一次手动健康检查；以 SSE 流式接收进度事件
+ * @param onEvent 进度事件回调；每收到一条 ProgressEvent (item 或 done) 调用一次
+ */
+export async function requestStandbyHealthCheck(cred, onEvent, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/health-check"), {
+    method: "POST",
+    headers: buildHeaders(cred, { Accept: "text/event-stream" }),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) {
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const rawBlock = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const lines = rawBlock.split("\n");
+      let dataLine = "";
+      for (const line of lines) {
+        if (line.startsWith("data:")) {
+          dataLine += line.slice(5).trim();
+        }
+      }
+      if (!dataLine) continue;
+      try {
+        const event = JSON.parse(dataLine);
+        if (typeof onEvent === "function") {
+          onEvent(event);
+        }
+      } catch (error) {
+        /* 忽略解析失败 */
+      }
+    }
+  }
+}

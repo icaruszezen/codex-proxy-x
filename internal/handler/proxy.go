@@ -21,6 +21,7 @@ import (
 	"codex-proxy/internal/auth"
 	"codex-proxy/internal/executor"
 	"codex-proxy/internal/notify"
+	"codex-proxy/internal/standby"
 	"codex-proxy/internal/thinking"
 
 	fasthttprouter "github.com/fasthttp/router"
@@ -70,6 +71,8 @@ var responsesWSUpgrader = websocket.FastHTTPUpgrader{
  */
 type ProxyHandler struct {
 	manager                   *auth.Manager
+	standbyCtrl               *standby.Controller /* 主备账号池协调器；nil 时退化为只用 manager */
+	standbyHealthChecker      *auth.HealthChecker /* 备用池手动健康检查复用，与定时健康检查器共享配置 */
 	executor                  *executor.Executor
 	apiKeys                   []string
 	maxRetry                  int
@@ -112,7 +115,7 @@ type auth401RecoverTrack struct {
  * @param debugUpstreamStream - 是否 Info 打印上游 Codex SSE 原文（对应配置 debug-upstream-stream）
  * @returns *ProxyHandler - 代理处理器实例
  */
-func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, indexHTML []byte) *ProxyHandler {
+func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, indexHTML []byte) *ProxyHandler {
 	if maxRetry < 0 {
 		maxRetry = 0
 	}
@@ -123,23 +126,25 @@ func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []s
 		quotaChecker = auth.NewQuotaChecker(baseURL, proxyURL, quotaCheckConcurrency, enableHTTP2, backendDomain, backendResolveAddress, time.Duration(quotaCheckCacheTTLSec)*time.Second)
 	}
 	return &ProxyHandler{
-		manager:             manager,
-		executor:            exec,
-		apiKeys:             apiKeys,
-		maxRetry:            maxRetry,
-		enableHealthyRetry:  enableHealthyRetry,
-		quotaChecker:        quotaChecker,
-		qmsgService:         qmsgService,
-		quotaPrecheck:       quotaPrecheck,
-		indexHTML:           indexHTML,
-		emptyRetryMax:       emptyRetryMax,
-		debugUpstreamStream: debugUpstreamStream,
-		enableModelFast:     enableModelFast,
-		enableModel1M:       enableModel1M,
-		enableModelImage:    enableModelImage,
-		enableWebSocket:     enableWebSocket,
-		debugWSStream:       debugWSStream,
-		concurrentRetry429:  concurrentRetry429,
+		manager:              manager,
+		standbyCtrl:          standbyCtrl,
+		standbyHealthChecker: standbyHealthChecker,
+		executor:             exec,
+		apiKeys:              apiKeys,
+		maxRetry:             maxRetry,
+		enableHealthyRetry:   enableHealthyRetry,
+		quotaChecker:         quotaChecker,
+		qmsgService:          qmsgService,
+		quotaPrecheck:        quotaPrecheck,
+		indexHTML:            indexHTML,
+		emptyRetryMax:        emptyRetryMax,
+		debugUpstreamStream:  debugUpstreamStream,
+		enableModelFast:      enableModelFast,
+		enableModel1M:        enableModel1M,
+		enableModelImage:     enableModelImage,
+		enableWebSocket:      enableWebSocket,
+		debugWSStream:        debugWSStream,
+		concurrentRetry429:   concurrentRetry429,
 		concurrentRetry429Timeout: func() time.Duration {
 			if concurrentRetry429TimeoutSec > 0 {
 				return time.Duration(concurrentRetry429TimeoutSec) * time.Second
@@ -219,6 +224,12 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	accountsExportHandler := h.handleAccountsExport
 	qmsgConfigHandler := h.handleQmsgConfig
 	qmsgTestHandler := h.handleQmsgTest
+	standbyStateHandler := h.handleStandbyState
+	standbyIngestHandler := h.handleStandbyAccountsIngest
+	standbyExportHandler := h.handleStandbyAccountsExport
+	standbyDeleteHandler := h.handleStandbyAccountDelete
+	standbyToggleEnabledHandler := h.handleStandbyAccountToggleEnabled
+	standbyHealthCheckHandler := h.handleStandbyHealthCheck
 	if len(h.apiKeys) > 0 {
 		accountsIngestHandler = h.authMiddleware(h.handleAccountsIngest)
 		accountsToggleEnabledHandler = h.authMiddleware(h.handleAccountToggleEnabled)
@@ -226,6 +237,12 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 		accountsExportHandler = h.authMiddleware(h.handleAccountsExport)
 		qmsgConfigHandler = h.authMiddleware(h.handleQmsgConfig)
 		qmsgTestHandler = h.authMiddleware(h.handleQmsgTest)
+		standbyStateHandler = h.authMiddleware(h.handleStandbyState)
+		standbyIngestHandler = h.authMiddleware(h.handleStandbyAccountsIngest)
+		standbyExportHandler = h.authMiddleware(h.handleStandbyAccountsExport)
+		standbyDeleteHandler = h.authMiddleware(h.handleStandbyAccountDelete)
+		standbyToggleEnabledHandler = h.authMiddleware(h.handleStandbyAccountToggleEnabled)
+		standbyHealthCheckHandler = h.authMiddleware(h.handleStandbyHealthCheck)
 	}
 	r.POST("/admin/accounts/ingest", accountsIngestHandler)
 	r.GET("/admin/accounts/ingest", accountsIngestHandler)
@@ -235,6 +252,13 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	r.GET("/admin/qmsg/config", qmsgConfigHandler)
 	r.PUT("/admin/qmsg/config", qmsgConfigHandler)
 	r.POST("/admin/qmsg/test", qmsgTestHandler)
+	/* 备用账号池 */
+	r.GET("/admin/standby/state", standbyStateHandler)
+	r.POST("/admin/standby/accounts/ingest", standbyIngestHandler)
+	r.POST("/admin/standby/accounts/export", standbyExportHandler)
+	r.POST("/admin/standby/accounts/delete", standbyDeleteHandler)
+	r.POST("/admin/standby/accounts/toggle-enabled", standbyToggleEnabledHandler)
+	r.POST("/admin/standby/health-check", standbyHealthCheckHandler)
 }
 
 /**
@@ -392,16 +416,35 @@ func (h *ProxyHandler) buildRetryConfig() executor.RetryConfig {
 }
 
 func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
+	pickFn := func(model string, excluded map[string]bool) (*auth.Account, error) {
+		if h.standbyCtrl != nil {
+			return h.standbyCtrl.Pick(model, excluded)
+		}
+		return h.manager.PickExcluding(model, excluded)
+	}
 	healthyPick := func(model string, excluded map[string]bool) (*auth.Account, error) {
+		if h.standbyCtrl != nil {
+			return h.standbyCtrl.PickRecentlySuccessful(model, excluded)
+		}
 		return h.manager.PickRecentlySuccessful(model, excluded)
 	}
+	ensureFresh := func(ctx context.Context, acc *auth.Account) bool {
+		if h.standbyCtrl != nil {
+			return h.standbyCtrl.EnsureTokenFresh(ctx, acc)
+		}
+		return h.manager.EnsureTokenFresh(ctx, acc)
+	}
+	managerOf := func(acc *auth.Account) *auth.Manager {
+		if h.standbyCtrl != nil {
+			if mgr := h.standbyCtrl.ManagerOf(acc); mgr != nil {
+				return mgr
+			}
+		}
+		return h.manager
+	}
 	rc := executor.RetryConfig{
-		PickFn: func(model string, excluded map[string]bool) (*auth.Account, error) {
-			return h.manager.PickExcluding(model, excluded)
-		},
-		EnsureTokenFreshFn: func(ctx context.Context, acc *auth.Account) bool {
-			return h.manager.EnsureTokenFresh(ctx, acc)
-		},
+		PickFn:             pickFn,
+		EnsureTokenFreshFn: ensureFresh,
 		On401Fn: func(acc *auth.Account) bool {
 			/* 先换号让当前请求立即继续；对 401 账号在后台提交 OAuth+额度恢复（异步，不阻塞） */
 			if acc == nil || acc.IsRefreshDisabled() {
@@ -409,22 +452,22 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 			}
 			if h.canPerformAuth401Recover(acc) {
 				h.recordAuth401Recover(acc)
-				h.manager.ScheduleRecoverAfterAuth401(acc, h.quotaChecker)
+				managerOf(acc).ScheduleRecoverAfterAuth401(acc, h.quotaChecker)
 			} else {
 				log.Warnf("账号 [%s] 在 30 秒内异步恢复次数过多（>2 次），跳过后台刷新", acc.GetEmail())
 			}
 			return false
 		},
 		On429RecoveryFn: func(ctx context.Context, acc *auth.Account) {
-			h.manager.ScheduleUpstream429Recovery(ctx, acc, h.quotaChecker)
+			managerOf(acc).ScheduleUpstream429Recovery(ctx, acc, h.quotaChecker)
 		},
-		OnAfterUpstreamErrFn: func(_ *auth.Account, statusCode int) {
+		OnAfterUpstreamErrFn: func(acc *auth.Account, statusCode int) {
 			if statusCode >= 200 && statusCode < 300 {
 				return
 			}
 			/* 冷却或限频后失效选号缓存；502/503/504 同步失效，避免大量请求继续撞同一批刚失败的号 */
 			if statusCode == 429 || statusCode == 403 || statusCode == 502 || statusCode == 503 || statusCode == 504 {
-				h.manager.InvalidateSelectorCache()
+				managerOf(acc).InvalidateSelectorCache()
 			}
 		},
 		MaxRetry:                  h.maxRetry,
@@ -433,6 +476,9 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		ConcurrentRetry429:        h.concurrentRetry429,
 		ConcurrentRetry429Timeout: h.concurrentRetry429Timeout,
 		PickIgnoringCooldownFn: func(model string, excluded map[string]bool) (*auth.Account, error) {
+			if h.standbyCtrl != nil {
+				return h.standbyCtrl.PickIgnoringCooldown(model, excluded)
+			}
 			return h.manager.PickIgnoringCooldown(model, excluded)
 		},
 	}
@@ -472,9 +518,9 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		rc.FallbackRecentPickFn = healthyPick
 		/* 最后一格选号：仅快速取最近成功号，不阻塞 OAuth（刷新由周期任务/401 异步恢复完成） */
 		rc.LastAttemptPickFn = func(_ context.Context, model string, excluded map[string]bool) (*auth.Account, error) {
-			acc, err := h.manager.PickRecentlySuccessful(model, excluded)
+			acc, err := healthyPick(model, excluded)
 			if err != nil {
-				return h.manager.PickExcluding(model, excluded)
+				return pickFn(model, excluded)
 			}
 			return acc, nil
 		}

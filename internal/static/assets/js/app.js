@@ -1,6 +1,7 @@
 import { createImportsFeature } from "./imports.js";
 import { createCodexLoginFeature } from "./login.js";
 import { createQmsgFeature } from "./qmsg.js";
+import { createStandbyFeature } from "./standby.js";
 import { createStatsFeature } from "./stats.js";
 import { setLoading } from "./ui.js";
 
@@ -10,12 +11,14 @@ const VIEW_EVENTS = "events";
 const VIEW_IMPORT = "import";
 const VIEW_LOGIN = "login";
 const VIEW_QMSG = "qmsg";
+const VIEW_STANDBY = "standby";
 
 const els = {
   pageSubtitle: document.getElementById("pageSubtitle"),
   statsViewBtn: document.getElementById("statsViewBtn"),
   eventsViewBtn: document.getElementById("eventsViewBtn"),
   importViewBtn: document.getElementById("importViewBtn"),
+  standbyViewBtn: document.getElementById("standbyViewBtn"),
   loginViewBtn: document.getElementById("loginViewBtn"),
   qmsgViewBtn: document.getElementById("qmsgViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
@@ -26,6 +29,7 @@ const els = {
   statsView: document.getElementById("statsView"),
   eventsView: document.getElementById("eventsView"),
   importView: document.getElementById("importView"),
+  standbyView: document.getElementById("standbyView"),
   loginView: document.getElementById("loginView"),
   qmsgView: document.getElementById("qmsgView"),
   loginGenerateBtn: document.getElementById("loginGenerateBtn"),
@@ -100,7 +104,21 @@ const els = {
   qmsgTestMessage: document.getElementById("qmsgTestMessage"),
   qmsgSaveBtn: document.getElementById("qmsgSaveBtn"),
   qmsgTestBtn: document.getElementById("qmsgTestBtn"),
-  qmsgState: document.getElementById("qmsgState")
+  qmsgState: document.getElementById("qmsgState"),
+  standbyStatusBanner: document.getElementById("standbyStatusBanner"),
+  standbySummary: document.getElementById("standbySummary"),
+  standbyActionState: document.getElementById("standbyActionState"),
+  standbyTableBody: document.getElementById("standbyTableBody"),
+  standbySelectAll: document.getElementById("standbySelectAll"),
+  standbyExportFormatSelect: document.getElementById("standbyExportFormatSelect"),
+  standbyExportSelectedBtn: document.getElementById("standbyExportSelectedBtn"),
+  standbyClearSelectionBtn: document.getElementById("standbyClearSelectionBtn"),
+  standbyHealthCheckBtn: document.getElementById("standbyHealthCheckBtn"),
+  standbyRefreshBtn: document.getElementById("standbyRefreshBtn"),
+  standbyImportTextarea: document.getElementById("standbyImportTextarea"),
+  standbyImportSubmitBtn: document.getElementById("standbyImportSubmitBtn"),
+  standbyImportState: document.getElementById("standbyImportState"),
+  backToStatsFromStandbyBtn: document.getElementById("backToStatsFromStandbyBtn")
 };
 
 let credentials = null;
@@ -185,6 +203,7 @@ function getViewFromHash() {
   if (hash === "#import") return VIEW_IMPORT;
   if (hash === "#login") return VIEW_LOGIN;
   if (hash === "#qmsg") return VIEW_QMSG;
+  if (hash === "#standby") return VIEW_STANDBY;
   return VIEW_STATS;
 }
 
@@ -193,7 +212,8 @@ function updateViewState() {
   const isImport = activeView === VIEW_IMPORT;
   const isLogin = activeView === VIEW_LOGIN;
   const isQmsg = activeView === VIEW_QMSG;
-  const isStats = !isEvents && !isImport && !isLogin && !isQmsg;
+  const isStandby = activeView === VIEW_STANDBY;
+  const isStats = !isEvents && !isImport && !isLogin && !isQmsg && !isStandby;
   els.pageSubtitle.textContent = isEvents
     ? "查看最近自动删除或自动停用的账号事件"
     : isImport
@@ -202,17 +222,21 @@ function updateViewState() {
         ? "通过 OpenAI OAuth 粘贴回调链接添加新账号"
         : isQmsg
           ? "配置账号自动删除/停用时的 qmsg 私聊通知"
-          : "数据只在点击刷新时更新";
+          : isStandby
+            ? "主池失效时自动回退的备用账号池"
+            : "数据只在点击刷新时更新";
   els.statsView.classList.toggle("hidden", !isStats);
   els.eventsView.classList.toggle("hidden", !isEvents);
   els.importView.classList.toggle("hidden", !isImport);
   els.loginView.classList.toggle("hidden", !isLogin);
   els.qmsgView.classList.toggle("hidden", !isQmsg);
+  if (els.standbyView) els.standbyView.classList.toggle("hidden", !isStandby);
   els.statsViewBtn.classList.toggle("active", isStats);
   els.eventsViewBtn.classList.toggle("active", isEvents);
   els.importViewBtn.classList.toggle("active", isImport);
   els.loginViewBtn.classList.toggle("active", isLogin);
   els.qmsgViewBtn.classList.toggle("active", isQmsg);
+  if (els.standbyViewBtn) els.standbyViewBtn.classList.toggle("active", isStandby);
   els.refreshBtn.classList.toggle("hidden", !isStats);
   els.clearBtn.classList.toggle("hidden", !isStats);
   els.recoverAllBtn.classList.toggle("hidden", !isStats);
@@ -224,6 +248,7 @@ function setView(view, options = {}) {
   else if (view === VIEW_IMPORT) activeView = VIEW_IMPORT;
   else if (view === VIEW_LOGIN) activeView = VIEW_LOGIN;
   else if (view === VIEW_QMSG) activeView = VIEW_QMSG;
+  else if (view === VIEW_STANDBY) activeView = VIEW_STANDBY;
   else activeView = VIEW_STATS;
   updateViewState();
   if (updateHash) {
@@ -235,7 +260,9 @@ function setView(view, options = {}) {
           ? "#login"
           : activeView === VIEW_QMSG
             ? "#qmsg"
-            : "#stats";
+            : activeView === VIEW_STANDBY
+              ? "#standby"
+              : "#stats";
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash;
     }
@@ -308,6 +335,22 @@ const qmsgFeature = createQmsgFeature({
   }
 });
 
+const standbyFeature = createStandbyFeature({
+  els,
+  getCredentials,
+  onMissingCredentials: () => {
+    setLoginError("");
+    showLogin(true);
+  },
+  onCredentialError: message => {
+    setLoginError(message);
+    showLogin(true);
+  },
+  onLoadingChange: isLoading => {
+    setLoading(els.loadingOverlay, isLoading);
+  }
+});
+
 function bindGlobalEvents() {
   els.statsViewBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
@@ -325,6 +368,17 @@ function bindGlobalEvents() {
     setView(VIEW_QMSG);
     qmsgFeature.ensureLoaded().catch(() => {});
   });
+  if (els.standbyViewBtn) {
+    els.standbyViewBtn.addEventListener("click", () => {
+      setView(VIEW_STANDBY);
+      standbyFeature.ensureLoaded().catch(() => {});
+    });
+  }
+  if (els.backToStatsFromStandbyBtn) {
+    els.backToStatsFromStandbyBtn.addEventListener("click", () => {
+      setView(VIEW_STATS);
+    });
+  }
   els.backToStatsBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
   });
@@ -360,6 +414,9 @@ function bindGlobalEvents() {
     setView(getViewFromHash(), { updateHash: false });
     if (activeView === VIEW_QMSG) {
       qmsgFeature.ensureLoaded().catch(() => {});
+    }
+    if (activeView === VIEW_STANDBY) {
+      standbyFeature.ensureLoaded().catch(() => {});
     }
   });
   els.saveCredentialsBtn.addEventListener("click", async () => {
@@ -412,10 +469,14 @@ function init() {
   importsFeature.init();
   loginFeature.init();
   qmsgFeature.init();
+  standbyFeature.init();
   bindGlobalEvents();
   setView(getViewFromHash(), { updateHash: false });
   if (activeView === VIEW_QMSG) {
     qmsgFeature.ensureLoaded().catch(() => {});
+  }
+  if (activeView === VIEW_STANDBY) {
+    standbyFeature.ensureLoaded().catch(() => {});
   }
 }
 

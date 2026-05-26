@@ -7,6 +7,12 @@ listen: ":8080"
 # 账号文件目录（存放 JSON 格式的 Codex 账号文件，DB 模式时可留空）
 auth-dir: "./auths"
 
+# 备用账号池目录（备用账号池仅在主池所有账号失效、无可选号时自动启用；启用时会通过 qmsg 通知；
+# 主池恢复后自动停用并停止备用池 Token 刷新。未启用期间，备用池不会向上游发起任何请求）。
+# 留空则默认为 <auth-dir>-standby（同级目录，避免落入主池扫描范围）。
+# DB 模式下，备用池账号在同一张表中以 is_standby=1 列区分。
+# standby-auth-dir: "./auths-standby"
+
 # 使用数据库存储账号（db-driver: postgres | mysql | sqlite）
 # db-enabled: true
 # db-driver: postgres

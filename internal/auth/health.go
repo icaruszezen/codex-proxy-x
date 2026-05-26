@@ -299,6 +299,82 @@ func (hc *HealthChecker) checkAccount(ctx context.Context, manager *Manager, acc
 }
 
 /**
+ * RunOnceWithProgress 对当前号池执行一次性健康检查，通过 SSE channel 流式返回进度
+ * 与定时循环 StartLoop 不同，本方法忽略 batchSize，扫描全部账号
+ * @param ctx - 上下文，可取消
+ * @param manager - 账号管理器
+ * @returns <-chan ProgressEvent - 进度事件 channel，结束后关闭
+ */
+func (hc *HealthChecker) RunOnceWithProgress(ctx context.Context, manager *Manager) <-chan ProgressEvent {
+	ch := make(chan ProgressEvent, 100)
+	go func() {
+		defer close(ch)
+		accounts := manager.GetAccounts()
+		total := len(accounts)
+		if total == 0 {
+			ch <- ProgressEvent{Type: "done", Message: "无账号", Duration: "0s"}
+			return
+		}
+		start := time.Now()
+		log.Infof("手动健康检查开始: %d 个账号（并发 %d）", total, hc.concurrency)
+		before := manager.AccountCount()
+
+		sem := make(chan struct{}, hc.concurrency)
+		var wg sync.WaitGroup
+		var successCount, failCount, currentIdx atomic.Int64
+
+		for _, acc := range accounts {
+			if ctx.Err() != nil {
+				break
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(a *Account) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				/* 检查前在号池快照 */
+				inPoolBefore := manager.AccountInPool(a)
+				hc.checkAccount(ctx, manager, a)
+				inPoolAfter := manager.AccountInPool(a)
+				/* 仍在池中视为 OK（账号未被禁用/移除） */
+				ok := inPoolBefore && inPoolAfter
+				if ok {
+					successCount.Add(1)
+				} else {
+					failCount.Add(1)
+				}
+				ch <- ProgressEvent{
+					Type:    "item",
+					Email:   a.GetEmail(),
+					Success: &ok,
+					Current: int(currentIdx.Add(1)),
+					Total:   total,
+				}
+			}(acc)
+		}
+
+		wg.Wait()
+
+		remaining := manager.AccountCount()
+		removed := before - remaining
+		elapsed := time.Since(start).Round(time.Millisecond)
+		log.Infof("手动健康检查完成: 成功 %d, 失败 %d, 移除 %d, 耗时 %v, 剩余 %d 个",
+			successCount.Load(), failCount.Load(), removed, elapsed, remaining)
+		ch <- ProgressEvent{
+			Type:         "done",
+			Message:      "健康检查完成",
+			Total:        total,
+			SuccessCount: int(successCount.Load()),
+			FailedCount:  int(failCount.Load()),
+			Remaining:    remaining,
+			Duration:     elapsed.String(),
+		}
+	}()
+	return ch
+}
+
+/**
  * parseHealthCheckRetryAfter 从 429 响应中解析冷却时间
  * @param body - 响应体
  * @returns time.Duration - 冷却时间
