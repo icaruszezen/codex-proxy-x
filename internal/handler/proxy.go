@@ -216,12 +216,14 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	accountsIngestHandler := h.handleAccountsIngest
 	accountsToggleEnabledHandler := h.handleAccountToggleEnabled
 	accountsDeleteHandler := h.handleAccountDelete
+	accountsExportHandler := h.handleAccountsExport
 	qmsgConfigHandler := h.handleQmsgConfig
 	qmsgTestHandler := h.handleQmsgTest
 	if len(h.apiKeys) > 0 {
 		accountsIngestHandler = h.authMiddleware(h.handleAccountsIngest)
 		accountsToggleEnabledHandler = h.authMiddleware(h.handleAccountToggleEnabled)
 		accountsDeleteHandler = h.authMiddleware(h.handleAccountDelete)
+		accountsExportHandler = h.authMiddleware(h.handleAccountsExport)
 		qmsgConfigHandler = h.authMiddleware(h.handleQmsgConfig)
 		qmsgTestHandler = h.authMiddleware(h.handleQmsgTest)
 	}
@@ -229,6 +231,7 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	r.GET("/admin/accounts/ingest", accountsIngestHandler)
 	r.POST("/admin/accounts/toggle-enabled", accountsToggleEnabledHandler)
 	r.POST("/admin/accounts/delete", accountsDeleteHandler)
+	r.POST("/admin/accounts/export", accountsExportHandler)
 	r.GET("/admin/qmsg/config", qmsgConfigHandler)
 	r.PUT("/admin/qmsg/config", qmsgConfigHandler)
 	r.POST("/admin/qmsg/test", qmsgTestHandler)

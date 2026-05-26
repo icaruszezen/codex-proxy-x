@@ -20,6 +20,7 @@ Authorization: Bearer <与 api-keys 中某一项完全一致>
 | POST | `/recover-auth` | 401 恢复：按邮箱/路径/全部同步刷新；失败可能将凭据重命名为 `*.json.disabled` |
 | POST | `/admin/accounts/ingest` | **导入账号**：HTTP 上传 JSON 填充号池（见下文） |
 | GET 或 POST | `/admin/accounts/ingest` | 同上路径，带 **`Upgrade: websocket`** 时使用 **WebSocket** 导入（见下文） |
+| POST | `/admin/accounts/export` | **导出账号**：将选中账号导出为 sub2api JSON（见下文） |
 | POST | `/admin/accounts/delete` | **硬删除账号**：从本地号池与持久化存储移除单个账号，不撤销上游 OAuth Token |
 | GET | `/admin/qmsg/config` | 读取 qmsg 私聊通知配置 |
 | PUT | `/admin/qmsg/config` | 保存 qmsg 私聊通知配置，立即生效并写入服务端本地文件 |
@@ -125,6 +126,91 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/ingest" \
 - 发送文本 **`ping`** 可收到 `{"type":"pong"}`（便于探活）。
 
 适合脚本分批推送、或避免单次 HTTP body 过大时拆成多帧（每帧仍应是完整可解析的 JSON 片段，而不是把一个 JSON 对象切成多帧）。
+
+---
+
+## 账号导出：`/admin/accounts/export`
+
+将号池中指定账号导出为 **sub2api 兼容 JSON**。响应体包含完整 Token 凭据，**务必与管理 API 同等鉴权**，勿在不可信环境调用。
+
+### HTTP：`POST /admin/accounts/export`
+
+**Content-Type:** `application/json`
+
+**请求体：**
+
+```json
+{
+  "emails": ["user@example.com", "other@example.com"],
+  "format": "sub2api-export"
+}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `emails` | 必填。要导出的账号邮箱列表；重复邮箱会自动去重 |
+| `format` | 可选。`sub2api-export`（默认，完整导出文件）或 `sub2api-array`（仅账号数组） |
+
+**响应** `200` 且 body 为 JSON，例如：
+
+```json
+{
+  "format": "sub2api-export",
+  "exported": 2,
+  "not_found": ["missing@example.com"],
+  "failed": [{"email": "bad@example.com", "error": "缺少可导出的凭据"}],
+  "data": {
+    "exported_at": "2026-05-26T08:00:00.123456789Z",
+    "proxies": [],
+    "accounts": [
+      {
+        "name": "user@example.com",
+        "platform": "openai",
+        "type": "oauth",
+        "credentials": {
+          "refresh_token": "rt_xxx",
+          "access_token": "at_xxx",
+          "id_token": "id_xxx",
+          "account_id": "acct_xxx",
+          "chatgpt_account_id": "acct_xxx",
+          "email": "user@example.com",
+          "expired": "2026-01-01T00:00:00Z",
+          "expires_at": 1767225600
+        }
+      }
+    ]
+  }
+}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `exported` | 成功导出的账号数 |
+| `not_found` | 号池中未找到的邮箱 |
+| `failed` | 找到账号但导出失败（如缺少凭据） |
+| `data` | 导出内容；`sub2api-export` 时为完整包装对象，`sub2api-array` 时为账号数组 |
+
+**404** 表示没有任何账号可导出（全部未找到或失败）。
+
+**curl 示例（sub2api 导出文件）：**
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/export" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{"emails":["user@example.com"],"format":"sub2api-export"}'
+```
+
+**curl 示例（sub2api 账号数组）：**
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/accounts/export" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{"emails":["user@example.com"],"format":"sub2api-array"}'
+```
+
+导出的 JSON 可直接用于 `/admin/accounts/ingest` 导入，实现 sub2api 格式 round-trip。
 
 ---
 

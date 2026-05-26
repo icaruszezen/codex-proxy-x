@@ -513,6 +513,25 @@ tr:hover td {
   accent-color: var(--accent-2);
 }
 
+.select-col {
+  width: 42px;
+  text-align: center;
+}
+
+.select-toggle-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.select-toggle-wrap input,
+.account-select {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-2);
+}
+
 .pagination {
   display: flex;
   gap: 8px;

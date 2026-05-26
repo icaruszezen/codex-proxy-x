@@ -1,4 +1,4 @@
-import { isCredentialError, requestAccountDelete, requestAccountToggleEnabled, requestRecoverAuth, requestStatsPage } from "./api.js";
+import { isCredentialError, requestAccountDelete, requestAccountsExport, requestAccountToggleEnabled, requestRecoverAuth, requestStatsPage } from "./api.js";
 import { buildAlert, escapeHtml, formatDate, formatNumber } from "./ui.js";
 
 const CACHE_KEY = "stats_cache_v2";
@@ -224,7 +224,9 @@ export function createStatsFeature({
     recoveringEmails: new Set(),
     isRecoveringAll: false,
     togglingEmails: new Set(),
-    deletingEmails: new Set()
+    deletingEmails: new Set(),
+    selectedEmails: new Set(),
+    isExporting: false
   };
 
   function safeGetCacheRaw() {
@@ -292,6 +294,138 @@ export function createStatsFeature({
     const hasDeletePending = state.deletingEmails.size > 0;
     els.recoverAllBtn.disabled = state.isRecoveringAll || hasSingleRecover || hasTogglePending || hasDeletePending;
     els.recoverAllBtn.textContent = state.isRecoveringAll ? "批量恢复中..." : "批量 401 恢复";
+  }
+
+  function updateExportControls() {
+    const selectedCount = state.selectedEmails.size;
+    const isBusy = state.isExporting
+      || state.isRecoveringAll
+      || state.recoveringEmails.size > 0
+      || state.togglingEmails.size > 0
+      || state.deletingEmails.size > 0;
+    if (els.exportSelectedBtn) {
+      els.exportSelectedBtn.disabled = selectedCount === 0 || isBusy;
+      els.exportSelectedBtn.textContent = state.isExporting ? "导出中..." : `导出选中 (${formatNumber(selectedCount)})`;
+    }
+    if (els.clearSelectionBtn) {
+      els.clearSelectionBtn.disabled = selectedCount === 0 || isBusy;
+    }
+    updateSelectAllCheckbox();
+  }
+
+  function normalizeSelectionEmail(email) {
+    const normalized = String(email || "").trim();
+    return normalized.length > 0 ? normalized : "";
+  }
+
+  function isRowSelected(email) {
+    const safeEmail = normalizeSelectionEmail(email);
+    return safeEmail !== "" && state.selectedEmails.has(safeEmail);
+  }
+
+  function updateSelectAllCheckbox() {
+    if (!els.selectAllAccounts) {
+      return;
+    }
+    const pageEmails = state.currentRows
+      .map(row => normalizeSelectionEmail(row?.email))
+      .filter(Boolean);
+    if (!pageEmails.length) {
+      els.selectAllAccounts.checked = false;
+      els.selectAllAccounts.indeterminate = false;
+      els.selectAllAccounts.disabled = true;
+      return;
+    }
+    const selectedOnPage = pageEmails.filter(email => state.selectedEmails.has(email)).length;
+    els.selectAllAccounts.disabled = state.isExporting
+      || state.isRecoveringAll
+      || state.recoveringEmails.size > 0
+      || state.togglingEmails.size > 0
+      || state.deletingEmails.size > 0;
+    els.selectAllAccounts.checked = selectedOnPage === pageEmails.length;
+    els.selectAllAccounts.indeterminate = selectedOnPage > 0 && selectedOnPage < pageEmails.length;
+  }
+
+  function toggleCurrentPageSelection(checked) {
+    for (const row of state.currentRows) {
+      const email = normalizeSelectionEmail(row?.email);
+      if (!email) {
+        continue;
+      }
+      if (checked) {
+        state.selectedEmails.add(email);
+      } else {
+        state.selectedEmails.delete(email);
+      }
+    }
+    updateExportControls();
+    renderTable(state.currentRows, state.pagination);
+  }
+
+  function toggleRowSelection(email, checked) {
+    const safeEmail = normalizeSelectionEmail(email);
+    if (!safeEmail) {
+      return;
+    }
+    if (checked) {
+      state.selectedEmails.add(safeEmail);
+    } else {
+      state.selectedEmails.delete(safeEmail);
+    }
+    updateExportControls();
+  }
+
+  function clearSelection() {
+    if (state.selectedEmails.size === 0) {
+      return;
+    }
+    state.selectedEmails.clear();
+    updateExportControls();
+    renderTable(state.currentRows, state.pagination);
+  }
+
+  function buildExportFilename(format) {
+    const now = new Date();
+    const stamp = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+      "-",
+      String(now.getHours()).padStart(2, "0"),
+      String(now.getMinutes()).padStart(2, "0"),
+      String(now.getSeconds()).padStart(2, "0")
+    ].join("");
+    return format === "sub2api-array"
+      ? `sub2api-accounts-${stamp}.json`
+      : `sub2api-export-${stamp}.json`;
+  }
+
+  function downloadExportPayload(data, format) {
+    const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = buildExportFilename(format);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function buildExportResultAlert(response) {
+    const parts = [`已成功导出 ${formatNumber(response.exported)} 个账号。`];
+    if (response.notFound.length) {
+      parts.push(`未找到 ${formatNumber(response.notFound.length)} 个：${response.notFound.join("、")}`);
+    }
+    if (response.failed.length) {
+      const preview = response.failed
+        .slice(0, 5)
+        .map(item => `${item.email || "未知账号"}（${item.error || "失败"}）`)
+        .join("；");
+      parts.push(`失败 ${formatNumber(response.failed.length)} 个：${preview}`);
+    }
+    const type = response.exported > 0 ? "success" : "warning";
+    return buildAlert(type, "账号导出完成", escapeHtml(parts.join(" ")));
   }
 
   function updateCacheBadge() {
@@ -416,6 +550,30 @@ export function createStatsFeature({
     `;
   }
 
+  function buildSelectCheckbox(email) {
+    const safeEmail = normalizeSelectionEmail(email);
+    if (!safeEmail) {
+      return "<span class=\"muted\">--</span>";
+    }
+    const isBusy = state.isExporting
+      || state.isRecoveringAll
+      || state.recoveringEmails.has(safeEmail)
+      || state.togglingEmails.has(safeEmail)
+      || state.deletingEmails.has(safeEmail);
+    return `
+      <label class="select-toggle-wrap">
+        <input
+          type="checkbox"
+          class="account-select"
+          data-action="select-account"
+          data-email="${encodeURIComponent(safeEmail)}"
+          ${isRowSelected(safeEmail) ? "checked" : ""}
+          ${isBusy ? "disabled" : ""}
+        />
+      </label>
+    `;
+  }
+
   function buildDeleteAction(email) {
     const safeEmail = String(email || "").trim();
     if (!safeEmail) {
@@ -467,6 +625,7 @@ export function createStatsFeature({
         `
         : "<span class=\"muted\">--</span>";
       tr.innerHTML = `
+        <td data-label="选择">${buildSelectCheckbox(email)}</td>
         <td data-label="邮箱">${emailCell}</td>
         <td data-label="状态"><span class="status ${statusClass}">${escapeHtml(row.status || "--")}</span>${refreshDisabledBadge}</td>
         <td data-label="套餐">${escapeHtml(row.plan_type || "--")}</td>
@@ -491,6 +650,7 @@ export function createStatsFeature({
     els.prevBtn.disabled = state.currentPage === 1;
     els.nextBtn.disabled = state.currentPage === totalPages;
     updateRecoverAllButton();
+    updateExportControls();
   }
 
   function showPlaceholder(show) {
@@ -505,6 +665,7 @@ export function createStatsFeature({
       state.pagination = null;
       state.currentRows = [];
       updateRecoverAllButton();
+      updateExportControls();
     }
   }
 
@@ -649,6 +810,39 @@ export function createStatsFeature({
     }
   }
 
+  async function handleExportSelected() {
+    if (state.isExporting || state.selectedEmails.size === 0) {
+      return;
+    }
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials();
+      return;
+    }
+    const format = String(els.exportFormatSelect?.value || "sub2api-export");
+    const emails = Array.from(state.selectedEmails);
+    state.isExporting = true;
+    updateExportControls();
+    renderTable(state.currentRows, state.pagination);
+    try {
+      const response = await requestAccountsExport(cred, { emails, format });
+      if (response.data == null) {
+        throw new Error("导出响应缺少 data 字段");
+      }
+      downloadExportPayload(response.data, response.format || format);
+      setActionState(buildExportResultAlert(response));
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+      handleRecoverError("账号导出失败", error);
+    } finally {
+      state.isExporting = false;
+      updateExportControls();
+      renderTable(state.currentRows, state.pagination);
+    }
+  }
+
   async function handleRecoverAll() {
     if (state.isRecoveringAll || state.recoveringEmails.size > 0 || state.togglingEmails.size > 0 || state.deletingEmails.size > 0) {
       return;
@@ -760,6 +954,19 @@ export function createStatsFeature({
     els.recoverAllBtn.addEventListener("click", () => {
       void handleRecoverAll();
     });
+    els.exportSelectedBtn?.addEventListener("click", () => {
+      void handleExportSelected();
+    });
+    els.clearSelectionBtn?.addEventListener("click", () => {
+      clearSelection();
+    });
+    els.selectAllAccounts?.addEventListener("change", event => {
+      const input = event.target;
+      if (!(input instanceof HTMLInputElement)) {
+        return;
+      }
+      toggleCurrentPageSelection(input.checked);
+    });
     els.searchInput.addEventListener("input", () => {
       window.clearTimeout(state.searchTimer);
       state.searchTimer = window.setTimeout(() => {
@@ -795,6 +1002,13 @@ export function createStatsFeature({
       if (!(target instanceof HTMLElement)) {
         return;
       }
+      const selectInput = target.closest("[data-action='select-account']");
+      if (selectInput instanceof HTMLInputElement) {
+        const email = selectInput.dataset.email ? decodeURIComponent(selectInput.dataset.email) : "";
+        toggleRowSelection(email, selectInput.checked);
+        updateSelectAllCheckbox();
+        return;
+      }
       const input = target.closest("[data-action='toggle-enabled']");
       if (!(input instanceof HTMLInputElement)) {
         return;
@@ -811,6 +1025,7 @@ export function createStatsFeature({
     state.initialized = true;
     setActionState("");
     updateRecoverAllButton();
+    updateExportControls();
     const existing = getCache();
     if (existing?.data) {
       render(existing.data);

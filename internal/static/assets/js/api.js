@@ -289,6 +289,38 @@ export async function requestAccountToggleEnabled(cred, payload, signal) {
   };
 }
 
+export async function requestAccountsExport(cred, payload, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const emails = Array.isArray(payload?.emails)
+    ? payload.emails.map(email => String(email || "").trim()).filter(Boolean)
+    : [];
+  if (!emails.length) {
+    throw new Error("请至少选择一个账号");
+  }
+  const format = String(payload?.format || "sub2api-export").trim() || "sub2api-export";
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/accounts/export"), {
+    method: "POST",
+    headers: buildHeaders(cred, {
+      "Content-Type": "application/json"
+    }),
+    body: JSON.stringify({ emails, format }),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return {
+    format: String(data?.format || format),
+    exported: Number(data?.exported ?? 0),
+    notFound: Array.isArray(data?.not_found) ? data.not_found : [],
+    failed: Array.isArray(data?.failed) ? data.failed : [],
+    data: data?.data
+  };
+}
+
 export async function requestAccountDelete(cred, payload, signal) {
   if (!cred?.apiUrl) {
     throw new Error("请输入 API 地址");

@@ -63,6 +63,13 @@
                 <option value="200">200</option>
               </select>
               <span class="muted" id="rowsInfo">0 条记录</span>
+              <label class="muted" for="exportFormatSelect">导出格式</label>
+              <select id="exportFormatSelect" title="sub2api 导出格式">
+                <option value="sub2api-export">sub2api 导出文件</option>
+                <option value="sub2api-array">sub2api 账号数组</option>
+              </select>
+              <button id="exportSelectedBtn" class="secondary" disabled>导出选中 (0)</button>
+              <button id="clearSelectionBtn" class="ghost" disabled>清除选择</button>
             </div>
             <div class="toolbar-right">
               <select id="statusFilter" title="账号状态筛选">
@@ -81,6 +88,11 @@
           <table>
             <thead>
               <tr>
+                <th class="select-col">
+                  <label class="select-toggle-wrap" title="全选当前页">
+                    <input id="selectAllAccounts" type="checkbox" aria-label="全选当前页" />
+                  </label>
+                </th>
                 <th>邮箱</th>
                 <th>状态</th>
                 <th>套餐</th>
