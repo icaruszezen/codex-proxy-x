@@ -35,12 +35,14 @@ import (
  * @field rootCtx - 父 context；激活生命周期均派生自此
  */
 type Controller struct {
-	primary      *auth.Manager
-	standby      *auth.Manager
-	quotaChecker *auth.QuotaChecker
-	qmsgService  *notify.Service
+	primary       *auth.Manager
+	standby       *auth.Manager
+	quotaChecker  *auth.QuotaChecker
+	qmsgService   *notify.Service
+	newapiService *notify.NewAPIService
 
 	active        atomic.Bool
+	primaryDown   atomic.Bool
 	refreshMu     sync.Mutex
 	refreshCancel context.CancelFunc
 	rootCtx       atomic.Pointer[context.Context]
@@ -89,6 +91,16 @@ func (c *Controller) Start(ctx context.Context) {
 		return
 	}
 	c.rootCtx.Store(&ctx)
+}
+
+/**
+ * SetNewAPIService 绑定 NewAPI 渠道控制服务；未配置时自动启停静默跳过
+ */
+func (c *Controller) SetNewAPIService(service *notify.NewAPIService) {
+	if c == nil {
+		return
+	}
+	c.newapiService = service
 }
 
 /**
@@ -151,9 +163,11 @@ func (c *Controller) Pick(model string, excluded map[string]bool) (*auth.Account
 		return nil, fmt.Errorf("standby controller 未初始化")
 	}
 	if acc, err := c.primary.PickExcluding(model, excluded); err == nil {
+		c.markPrimaryAvailableForNewAPI()
 		c.deactivateIfActive()
 		return acc, nil
 	} else {
+		c.markPrimaryUnavailableForNewAPI()
 		if c.standby == nil || c.standby.AccountCount() == 0 {
 			return nil, err
 		}
@@ -195,6 +209,21 @@ func (c *Controller) PickIgnoringCooldown(model string, excluded map[string]bool
 		}
 	}
 	return c.primary.PickIgnoringCooldown(model, excluded)
+}
+
+/**
+ * SyncPrimaryAvailabilityForNewAPI 根据主池当前可选号状态同步 NewAPI 渠道状态。
+ * 管理端手动启停/删除/导入账号时调用，弥补无代理请求时不会进入 Pick 的场景。
+ */
+func (c *Controller) SyncPrimaryAvailabilityForNewAPI() {
+	if c == nil || c.primary == nil {
+		return
+	}
+	if c.primary.HasPickableAccount() {
+		c.markPrimaryAvailableForNewAPI()
+	} else {
+		c.markPrimaryUnavailableForNewAPI()
+	}
 }
 
 /**
@@ -301,6 +330,59 @@ func (c *Controller) sendQmsg(format string, args ...any) {
 		defer cancel()
 		if _, err := c.qmsgService.Send(ctx, msg); err != nil && err != notify.ErrQmsgDisabled {
 			log.Warnf("备用账号池 qmsg 通知发送失败: %v", err)
+		}
+	}()
+}
+
+func (c *Controller) markPrimaryUnavailableForNewAPI() {
+	if !c.newAPIAutoSwitchEnabled() {
+		return
+	}
+	if !c.primaryDown.CompareAndSwap(false, true) {
+		return
+	}
+	c.sendNewAPIDisable()
+}
+
+func (c *Controller) markPrimaryAvailableForNewAPI() {
+	if !c.newAPIAutoSwitchEnabled() {
+		return
+	}
+	if !c.primaryDown.CompareAndSwap(true, false) {
+		return
+	}
+	c.sendNewAPIEnable()
+}
+
+func (c *Controller) newAPIAutoSwitchEnabled() bool {
+	if c == nil || c.newapiService == nil {
+		return false
+	}
+	return c.newapiService.Config().AutoSwitch
+}
+
+func (c *Controller) sendNewAPIDisable() {
+	if c == nil || c.newapiService == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, err := c.newapiService.DisableChannel(ctx); err != nil && err != notify.ErrNewAPIAutoSwitchDisabled {
+			log.Warnf("备用账号池启用时禁用 NewAPI 渠道失败: %v", err)
+		}
+	}()
+}
+
+func (c *Controller) sendNewAPIEnable() {
+	if c == nil || c.newapiService == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, err := c.newapiService.EnableChannel(ctx); err != nil && err != notify.ErrNewAPIAutoSwitchDisabled {
+			log.Warnf("备用账号池停用时启用 NewAPI 渠道失败: %v", err)
 		}
 	}()
 }

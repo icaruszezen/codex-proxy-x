@@ -1,5 +1,6 @@
 import { createImportsFeature } from "./imports.js";
 import { createCodexLoginFeature } from "./login.js";
+import { createNewapiFeature } from "./newapi.js";
 import { createQmsgFeature } from "./qmsg.js";
 import { createStandbyFeature } from "./standby.js";
 import { createStatsFeature } from "./stats.js";
@@ -12,6 +13,7 @@ const VIEW_IMPORT = "import";
 const VIEW_LOGIN = "login";
 const VIEW_QMSG = "qmsg";
 const VIEW_STANDBY = "standby";
+const VIEW_NEWAPI = "newapi";
 
 const els = {
   pageSubtitle: document.getElementById("pageSubtitle"),
@@ -21,6 +23,7 @@ const els = {
   standbyViewBtn: document.getElementById("standbyViewBtn"),
   loginViewBtn: document.getElementById("loginViewBtn"),
   qmsgViewBtn: document.getElementById("qmsgViewBtn"),
+  newapiViewBtn: document.getElementById("newapiViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   clearBtn: document.getElementById("clearBtn"),
   recoverAllBtn: document.getElementById("recoverAllBtn"),
@@ -32,6 +35,7 @@ const els = {
   standbyView: document.getElementById("standbyView"),
   loginView: document.getElementById("loginView"),
   qmsgView: document.getElementById("qmsgView"),
+  newapiView: document.getElementById("newapiView"),
   loginGenerateBtn: document.getElementById("loginGenerateBtn"),
   loginAuthUrl: document.getElementById("loginAuthUrl"),
   loginUrlBlock: document.getElementById("loginUrlBlock"),
@@ -105,6 +109,20 @@ const els = {
   qmsgSaveBtn: document.getElementById("qmsgSaveBtn"),
   qmsgTestBtn: document.getElementById("qmsgTestBtn"),
   qmsgState: document.getElementById("qmsgState"),
+  backToStatsFromNewapiBtn: document.getElementById("backToStatsFromNewapiBtn"),
+  openSettingsFromNewapiBtn: document.getElementById("openSettingsFromNewapiBtn"),
+  newapiConfigStatus: document.getElementById("newapiConfigStatus"),
+  newapiLoadBtn: document.getElementById("newapiLoadBtn"),
+  newapiAutoSwitch: document.getElementById("newapiAutoSwitch"),
+  newapiBaseURL: document.getElementById("newapiBaseURL"),
+  newapiToken: document.getElementById("newapiToken"),
+  newapiAdminUserID: document.getElementById("newapiAdminUserID"),
+  newapiChannelID: document.getElementById("newapiChannelID"),
+  newapiTimeout: document.getElementById("newapiTimeout"),
+  newapiSaveBtn: document.getElementById("newapiSaveBtn"),
+  newapiTestEnableBtn: document.getElementById("newapiTestEnableBtn"),
+  newapiTestDisableBtn: document.getElementById("newapiTestDisableBtn"),
+  newapiState: document.getElementById("newapiState"),
   standbyStatusBanner: document.getElementById("standbyStatusBanner"),
   standbySummary: document.getElementById("standbySummary"),
   standbyActionState: document.getElementById("standbyActionState"),
@@ -204,6 +222,7 @@ function getViewFromHash() {
   if (hash === "#login") return VIEW_LOGIN;
   if (hash === "#qmsg") return VIEW_QMSG;
   if (hash === "#standby") return VIEW_STANDBY;
+  if (hash === "#newapi") return VIEW_NEWAPI;
   return VIEW_STATS;
 }
 
@@ -213,7 +232,8 @@ function updateViewState() {
   const isLogin = activeView === VIEW_LOGIN;
   const isQmsg = activeView === VIEW_QMSG;
   const isStandby = activeView === VIEW_STANDBY;
-  const isStats = !isEvents && !isImport && !isLogin && !isQmsg && !isStandby;
+  const isNewapi = activeView === VIEW_NEWAPI;
+  const isStats = !isEvents && !isImport && !isLogin && !isQmsg && !isStandby && !isNewapi;
   els.pageSubtitle.textContent = isEvents
     ? "查看最近自动删除或自动停用的账号事件"
     : isImport
@@ -224,19 +244,23 @@ function updateViewState() {
           ? "配置账号自动删除/停用时的 qmsg 私聊通知"
           : isStandby
             ? "主池失效时自动回退的备用账号池"
-            : "数据只在点击刷新时更新";
+            : isNewapi
+              ? "配置备用池切换时联动的 NewAPI 渠道状态"
+              : "数据只在点击刷新时更新";
   els.statsView.classList.toggle("hidden", !isStats);
   els.eventsView.classList.toggle("hidden", !isEvents);
   els.importView.classList.toggle("hidden", !isImport);
   els.loginView.classList.toggle("hidden", !isLogin);
   els.qmsgView.classList.toggle("hidden", !isQmsg);
   if (els.standbyView) els.standbyView.classList.toggle("hidden", !isStandby);
+  if (els.newapiView) els.newapiView.classList.toggle("hidden", !isNewapi);
   els.statsViewBtn.classList.toggle("active", isStats);
   els.eventsViewBtn.classList.toggle("active", isEvents);
   els.importViewBtn.classList.toggle("active", isImport);
   els.loginViewBtn.classList.toggle("active", isLogin);
   els.qmsgViewBtn.classList.toggle("active", isQmsg);
   if (els.standbyViewBtn) els.standbyViewBtn.classList.toggle("active", isStandby);
+  if (els.newapiViewBtn) els.newapiViewBtn.classList.toggle("active", isNewapi);
   els.refreshBtn.classList.toggle("hidden", !isStats);
   els.clearBtn.classList.toggle("hidden", !isStats);
   els.recoverAllBtn.classList.toggle("hidden", !isStats);
@@ -249,6 +273,7 @@ function setView(view, options = {}) {
   else if (view === VIEW_LOGIN) activeView = VIEW_LOGIN;
   else if (view === VIEW_QMSG) activeView = VIEW_QMSG;
   else if (view === VIEW_STANDBY) activeView = VIEW_STANDBY;
+  else if (view === VIEW_NEWAPI) activeView = VIEW_NEWAPI;
   else activeView = VIEW_STATS;
   updateViewState();
   if (updateHash) {
@@ -262,7 +287,9 @@ function setView(view, options = {}) {
             ? "#qmsg"
             : activeView === VIEW_STANDBY
               ? "#standby"
-              : "#stats";
+              : activeView === VIEW_NEWAPI
+                ? "#newapi"
+                : "#stats";
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash;
     }
@@ -335,6 +362,22 @@ const qmsgFeature = createQmsgFeature({
   }
 });
 
+const newapiFeature = createNewapiFeature({
+  els,
+  getCredentials,
+  onMissingCredentials: () => {
+    setLoginError("");
+    showLogin(true);
+  },
+  onCredentialError: message => {
+    setLoginError(message);
+    showLogin(true);
+  },
+  onLoadingChange: isLoading => {
+    setLoading(els.loadingOverlay, isLoading);
+  }
+});
+
 const standbyFeature = createStandbyFeature({
   els,
   getCredentials,
@@ -368,6 +411,12 @@ function bindGlobalEvents() {
     setView(VIEW_QMSG);
     qmsgFeature.ensureLoaded().catch(() => {});
   });
+  if (els.newapiViewBtn) {
+    els.newapiViewBtn.addEventListener("click", () => {
+      setView(VIEW_NEWAPI);
+      newapiFeature.ensureLoaded().catch(() => {});
+    });
+  }
   if (els.standbyViewBtn) {
     els.standbyViewBtn.addEventListener("click", () => {
       setView(VIEW_STANDBY);
@@ -391,6 +440,11 @@ function bindGlobalEvents() {
   els.backToStatsFromQmsgBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
   });
+  if (els.backToStatsFromNewapiBtn) {
+    els.backToStatsFromNewapiBtn.addEventListener("click", () => {
+      setView(VIEW_STATS);
+    });
+  }
   els.openSettingsFromLoginBtn.addEventListener("click", () => {
     setLoginError("");
     showLogin(true);
@@ -410,10 +464,19 @@ function bindGlobalEvents() {
     setLoginError("");
     showLogin(true);
   });
+  if (els.openSettingsFromNewapiBtn) {
+    els.openSettingsFromNewapiBtn.addEventListener("click", () => {
+      setLoginError("");
+      showLogin(true);
+    });
+  }
   window.addEventListener("hashchange", () => {
     setView(getViewFromHash(), { updateHash: false });
     if (activeView === VIEW_QMSG) {
       qmsgFeature.ensureLoaded().catch(() => {});
+    }
+    if (activeView === VIEW_NEWAPI) {
+      newapiFeature.ensureLoaded().catch(() => {});
     }
     if (activeView === VIEW_STANDBY) {
       standbyFeature.ensureLoaded().catch(() => {});
@@ -469,11 +532,15 @@ function init() {
   importsFeature.init();
   loginFeature.init();
   qmsgFeature.init();
+  newapiFeature.init();
   standbyFeature.init();
   bindGlobalEvents();
   setView(getViewFromHash(), { updateHash: false });
   if (activeView === VIEW_QMSG) {
     qmsgFeature.ensureLoaded().catch(() => {});
+  }
+  if (activeView === VIEW_NEWAPI) {
+    newapiFeature.ensureLoaded().catch(() => {});
   }
   if (activeView === VIEW_STANDBY) {
     standbyFeature.ensureLoaded().catch(() => {});

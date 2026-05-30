@@ -79,6 +79,7 @@ type ProxyHandler struct {
 	enableHealthyRetry        bool
 	quotaChecker              *auth.QuotaChecker
 	qmsgService               *notify.Service
+	newapiService             *notify.NewAPIService
 	quotaPrecheck             bool /* true：选号后 wham 预检；false：直发上游，401 换号+异步 OAuth */
 	indexHTML                 []byte
 	emptyRetryMax             int
@@ -115,7 +116,7 @@ type auth401RecoverTrack struct {
  * @param debugUpstreamStream - 是否 Info 打印上游 Codex SSE 原文（对应配置 debug-upstream-stream）
  * @returns *ProxyHandler - 代理处理器实例
  */
-func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, indexHTML []byte) *ProxyHandler {
+func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, newapiService *notify.NewAPIService, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, indexHTML []byte) *ProxyHandler {
 	if maxRetry < 0 {
 		maxRetry = 0
 	}
@@ -135,6 +136,7 @@ func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []s
 		enableHealthyRetry:   enableHealthyRetry,
 		quotaChecker:         quotaChecker,
 		qmsgService:          qmsgService,
+		newapiService:        newapiService,
 		quotaPrecheck:        quotaPrecheck,
 		indexHTML:            indexHTML,
 		emptyRetryMax:        emptyRetryMax,
@@ -224,6 +226,9 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	accountsExportHandler := h.handleAccountsExport
 	qmsgConfigHandler := h.handleQmsgConfig
 	qmsgTestHandler := h.handleQmsgTest
+	newapiConfigHandler := h.handleNewAPIConfig
+	newapiTestEnableHandler := h.handleNewAPITestEnable
+	newapiTestDisableHandler := h.handleNewAPITestDisable
 	standbyStateHandler := h.handleStandbyState
 	standbyIngestHandler := h.handleStandbyAccountsIngest
 	standbyExportHandler := h.handleStandbyAccountsExport
@@ -237,6 +242,9 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 		accountsExportHandler = h.authMiddleware(h.handleAccountsExport)
 		qmsgConfigHandler = h.authMiddleware(h.handleQmsgConfig)
 		qmsgTestHandler = h.authMiddleware(h.handleQmsgTest)
+		newapiConfigHandler = h.authMiddleware(h.handleNewAPIConfig)
+		newapiTestEnableHandler = h.authMiddleware(h.handleNewAPITestEnable)
+		newapiTestDisableHandler = h.authMiddleware(h.handleNewAPITestDisable)
 		standbyStateHandler = h.authMiddleware(h.handleStandbyState)
 		standbyIngestHandler = h.authMiddleware(h.handleStandbyAccountsIngest)
 		standbyExportHandler = h.authMiddleware(h.handleStandbyAccountsExport)
@@ -252,6 +260,10 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	r.GET("/admin/qmsg/config", qmsgConfigHandler)
 	r.PUT("/admin/qmsg/config", qmsgConfigHandler)
 	r.POST("/admin/qmsg/test", qmsgTestHandler)
+	r.GET("/admin/newapi/config", newapiConfigHandler)
+	r.PUT("/admin/newapi/config", newapiConfigHandler)
+	r.POST("/admin/newapi/test/enable", newapiTestEnableHandler)
+	r.POST("/admin/newapi/test/disable", newapiTestDisableHandler)
 	/* 备用账号池 */
 	r.GET("/admin/standby/state", standbyStateHandler)
 	r.POST("/admin/standby/accounts/ingest", standbyIngestHandler)
@@ -1017,6 +1029,7 @@ func (h *ProxyHandler) handleAccountToggleEnabled(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	stats := acc.GetStats()
+	h.syncPrimaryAvailabilityForNewAPI()
 	writeJSON(ctx, fasthttp.StatusOK, map[string]any{
 		"email":          stats.Email,
 		"enabled":        stats.Status != "disabled",
@@ -1064,12 +1077,20 @@ func (h *ProxyHandler) handleAccountDelete(ctx *fasthttp.RequestCtx) {
 		})
 		return
 	}
+	h.syncPrimaryAvailabilityForNewAPI()
 	writeJSON(ctx, fasthttp.StatusOK, map[string]any{
 		"email":      result.Email,
 		"file_path":  result.FilePath,
 		"deleted":    true,
 		"pool_total": result.PoolTotal,
 	})
+}
+
+func (h *ProxyHandler) syncPrimaryAvailabilityForNewAPI() {
+	if h == nil || h.standbyCtrl == nil {
+		return
+	}
+	h.standbyCtrl.SyncPrimaryAvailabilityForNewAPI()
 }
 
 /**

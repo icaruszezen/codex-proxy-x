@@ -1356,6 +1356,23 @@ func (m *Manager) AccountCount() int {
 }
 
 /**
+ * HasPickableAccount 返回当前是否至少存在一个可被正常选号使用的账号。
+ */
+func (m *Manager) HasPickableAccount() bool {
+	if m == nil {
+		return false
+	}
+	accounts := *m.accountsPtr.Load()
+	nowMs := time.Now().UnixMilli()
+	for _, acc := range accounts {
+		if accountPickableAt(nowMs, acc) {
+			return true
+		}
+	}
+	return false
+}
+
+/**
  * AccountInPool 判断账号是否仍在号池（用于异步任务中途检测是否已移除）
  */
 func (m *Manager) AddAccountFromFile(filePath string) error {

@@ -25,6 +25,10 @@ Authorization: Bearer <与 api-keys 中某一项完全一致>
 | GET | `/admin/qmsg/config` | 读取 qmsg 私聊通知配置 |
 | PUT | `/admin/qmsg/config` | 保存 qmsg 私聊通知配置，立即生效并写入服务端本地文件 |
 | POST | `/admin/qmsg/test` | 发送 qmsg 测试消息，验证推送通道 |
+| GET | `/admin/newapi/config` | 读取 NewAPI 渠道控制配置 |
+| PUT | `/admin/newapi/config` | 保存 NewAPI 渠道控制配置，立即生效并写入服务端本地文件 |
+| POST | `/admin/newapi/test/enable` | 测试启用 NewAPI 渠道 |
+| POST | `/admin/newapi/test/disable` | 测试禁用 NewAPI 渠道 |
 
 对话相关接口（`/v1/*`）的鉴权规则相同：配置了 `api-keys` 则必须带 Bearer。
 
@@ -347,6 +351,98 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/qmsg/test" \
 
 ---
 
+## NewAPI 渠道控制：`/admin/newapi/*`
+
+用于配置下游 NewAPI 项目的渠道地址与管理员信息。配置保存到服务端本地文件 `auth-dir/newapi-config.json`，保存后立即生效，无需重启。
+
+当 `auto_switch=true` 时，主池无可用账号会向 NewAPI 发送渠道禁用请求（`status=2`），即使备用账号池为空也会触发；主池恢复为可选号状态后会发送渠道启用请求（`status=1`）。自动请求异步执行，失败只记录日志，不会阻断代理请求或主备切换。
+
+### `GET /admin/newapi/config`
+
+读取当前配置。出于安全考虑，响应不会返回明文管理员令牌，只返回掩码。
+
+```json
+{
+  "object": "newapi_config",
+  "config": {
+    "auto_switch": true,
+    "base_url": "https://your-domain.com",
+    "token_masked": "abcd********mnop",
+    "admin_user_id": 1,
+    "channel_id": 123,
+    "timeout_sec": 10,
+    "configured": true
+  }
+}
+```
+
+### `PUT /admin/newapi/config`
+
+保存配置。`auto_switch=true` 时必须已有管理员令牌或在本次请求中提供 `admin_token`，并且 `base_url`、`admin_user_id`、`channel_id` 都必须有效。如果请求中的 `admin_token` 为空且服务端已有令牌，则保留原令牌。
+
+```bash
+curl -sS -X PUT "http://127.0.0.1:8080/admin/newapi/config" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "auto_switch": true,
+    "base_url": "https://your-domain.com",
+    "admin_token": "YOUR_ADMIN_TOKEN",
+    "admin_user_id": 1,
+    "channel_id": 123,
+    "timeout_sec": 10
+  }'
+```
+
+### `POST /admin/newapi/test/enable`
+
+立即向 NewAPI 发送渠道启用请求，便于验证地址、令牌、管理员 ID 和渠道 ID 是否正确。测试接口不要求 `auto_switch=true`，但要求配置完整。
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/newapi/test/enable" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+对应 NewAPI 请求体为：
+
+```json
+{ "id": 123, "status": 1 }
+```
+
+### `POST /admin/newapi/test/disable`
+
+立即向 NewAPI 发送渠道禁用请求，便于验证同一配置下的禁用动作。
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/newapi/test/disable" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+对应 NewAPI 请求体为：
+
+```json
+{ "id": 123, "status": 2 }
+```
+
+成功响应示例：
+
+```json
+{
+  "object": "newapi_test_result",
+  "success": true,
+  "result": {
+    "success": true,
+    "status_code": 200
+  }
+}
+```
+
+---
+
 ## 其他管理接口摘要
 
 ### `POST /recover-auth`
@@ -367,4 +463,5 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/qmsg/test" \
 
 - 导入接口会写入**完整 OAuth 凭据**，权限与修改号池等价；务必 **配置 `api-keys`**、限制来源 IP，或通过反向代理仅对内网开放 `/admin/`。  
 - qmsg 配置文件包含明文 KEY，默认保存为 `auth-dir/qmsg-config.json` 且文件权限为 `0600`；请保护 `auth-dir` 目录访问权限。
-- 勿在日志、工单中粘贴真实 `refresh_token` 或 qmsg KEY。
+- NewAPI 配置文件包含明文管理员令牌，默认保存为 `auth-dir/newapi-config.json` 且文件权限为 `0600`；请保护 `auth-dir` 目录访问权限。
+- 勿在日志、工单中粘贴真实 `refresh_token`、qmsg KEY 或 NewAPI 管理员令牌。

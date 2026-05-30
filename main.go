@@ -212,9 +212,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化 qmsg 配置失败: %v", err)
 	}
+	newapiService, err := notify.NewNewAPIService(notify.DefaultNewAPIConfigPath(cfg.AuthDir))
+	if err != nil {
+		log.Fatalf("初始化 NewAPI 配置失败: %v", err)
+	}
 	manager.SetAccountEventNotifier(qmsgService)
 	if qmsgService.PublicConfig(false).Configured {
 		log.Infof("qmsg 通知配置已加载")
+	}
+	if newapiService.PublicConfig().Configured {
+		log.Infof("NewAPI 渠道配置已加载")
 	}
 	quotaChecker := auth.NewQuotaChecker(cfg.BaseURL, cfg.ProxyURL, cfg.QuotaCheckConcurrency, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, time.Duration(cfg.QuotaCheckCacheTTLSec)*time.Second)
 	manager.SetPostRefreshQuotaChecker(quotaChecker)
@@ -296,6 +303,7 @@ func main() {
 
 	/* 备用池协调器：先试主池、失败回退备用池；激活/停用切换时发 qmsg 通知 */
 	standbyCtrl := standby.New(manager, standbyManager, quotaChecker, qmsgService)
+	standbyCtrl.SetNewAPIService(newapiService)
 	standbyCtrl.Start(ctx)
 
 	/* 启动后台 Token 刷新 */
@@ -371,7 +379,7 @@ func main() {
 	r := router.New()
 	r.GET("/assets/{filepath:*}", static.HandleAsset)
 	r.HEAD("/assets/{filepath:*}", static.HandleAsset)
-	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, standbyCtrl, healthChecker, static.IndexHTML)
+	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, newapiService, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, standbyCtrl, healthChecker, static.IndexHTML)
 	proxyHandler.RegisterRoutes(r)
 	handler.SetupLoginRoutes(r, cfg.AuthDir, cfg.OAuthCallbackPort, cfg.OAuthNoBrowser, cfg.EnableCodexLogin, manager)
 

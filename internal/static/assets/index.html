@@ -20,6 +20,7 @@
         <button id="standbyViewBtn" class="secondary">备用账号池</button>
         <button id="loginViewBtn" class="secondary">账号登录</button>
         <button id="qmsgViewBtn" class="secondary">qmsg 通知</button>
+        <button id="newapiViewBtn" class="secondary">NewAPI 渠道</button>
         <button id="refreshBtn">刷新数据</button>
         <button id="clearBtn" class="secondary">清空缓存</button>
         <button id="recoverAllBtn" class="ghost">批量 401 恢复</button>
@@ -419,6 +420,61 @@
             <button id="openSettingsFromQmsgBtn" class="ghost">设置接口</button>
           </div>
           <div id="qmsgState" class="alert-stack"></div>
+        </div>
+      </section>
+
+      <section id="newapiView" class="view hidden">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>NewAPI 渠道控制</h2>
+              <p class="panel-note">配置下游 NewAPI 项目渠道。开启自动禁用/启用后，主池无可用账号时会禁用渠道，主池恢复时会重新启用渠道。</p>
+            </div>
+            <div class="hero-actions">
+              <span id="newapiConfigStatus" class="pill">未加载</span>
+              <button id="newapiLoadBtn" class="ghost">重新加载</button>
+              <button id="backToStatsFromNewapiBtn" class="ghost">返回统计</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel qmsg-form newapi-form">
+          <div class="form-grid">
+            <label class="check-row">
+              <input id="newapiAutoSwitch" type="checkbox" />
+              <span>开启主池可用性变化时自动禁用/启用 NewAPI 渠道</span>
+            </label>
+            <div>
+              <label for="newapiBaseURL">NewAPI 项目地址</label>
+              <input id="newapiBaseURL" type="url" placeholder="https://your-domain.com" />
+              <p class="panel-note">服务端会调用该地址下的 <code>/api/channel/</code> 接口。</p>
+            </div>
+            <div>
+              <label for="newapiToken">管理员令牌</label>
+              <input id="newapiToken" type="text" autocomplete="off" placeholder="输入 NewAPI 管理员令牌" />
+              <p class="panel-note">令牌保存后只显示掩码；重新保存时留空表示不修改。</p>
+            </div>
+            <div>
+              <label for="newapiAdminUserID">管理员 ID</label>
+              <input id="newapiAdminUserID" type="number" min="1" step="1" placeholder="例如 1" />
+            </div>
+            <div>
+              <label for="newapiChannelID">渠道 ID</label>
+              <input id="newapiChannelID" type="number" min="1" step="1" placeholder="例如 123" />
+            </div>
+            <div>
+              <label for="newapiTimeout">请求超时（秒）</label>
+              <input id="newapiTimeout" type="number" min="1" max="60" step="1" value="10" />
+            </div>
+          </div>
+
+          <div class="hero-actions">
+            <button id="newapiSaveBtn">保存配置</button>
+            <button id="newapiTestEnableBtn" class="secondary">测试启用</button>
+            <button id="newapiTestDisableBtn" class="secondary">测试禁用</button>
+            <button id="openSettingsFromNewapiBtn" class="ghost">设置接口</button>
+          </div>
+          <div id="newapiState" class="alert-stack"></div>
         </div>
       </section>
     </main>

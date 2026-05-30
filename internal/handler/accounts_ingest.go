@@ -40,6 +40,7 @@ func (h *ProxyHandler) handleAccountsIngest(ctx *fasthttp.RequestCtx) {
 		})
 		return
 	}
+	h.syncPrimaryAvailabilityForNewAPI()
 	writeJSON(ctx, fasthttp.StatusOK, res)
 }
 
@@ -71,6 +72,7 @@ func (h *ProxyHandler) handleAccountsIngestWS(ctx *fasthttp.RequestCtx) {
 				_ = conn.WriteMessage(websocket.TextMessage, b)
 				continue
 			}
+			h.syncPrimaryAvailabilityForNewAPI()
 			b, mErr := json.Marshal(res)
 			if mErr != nil {
 				log.Warnf("accounts ingest ws: marshal: %v", mErr)
