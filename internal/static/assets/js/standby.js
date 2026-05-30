@@ -7,7 +7,7 @@ import {
   requestStandbyToggleEnabled,
   requestStandbyHealthCheck
 } from "./api.js";
-import { buildAlert, escapeHtml, formatDate, formatNumber } from "./ui.js";
+import { buildAlert, cooldownStatusText, cooldownStatusTitle, cooldownUntilAttr, ensureCooldownTicker, escapeHtml, formatDate, formatNumber } from "./ui.js";
 
 /**
  * createStandbyFeature 备用账号池视图特性
@@ -96,6 +96,21 @@ export function createStandbyFeature({
     return state.togglingEmails.has(safe) || state.deletingEmails.has(safe);
   }
 
+  function buildStatusCell(row) {
+    const statusClass = ["active", "cooldown", "disabled"].includes(row?.status) ? row.status : "disabled";
+    let statusText = String(row?.status || "--");
+    let title = "";
+    let dataCooldownUntil = "";
+    if (row?.status === "cooldown") {
+      statusText = cooldownStatusText(row.cooldown_until);
+      title = cooldownStatusTitle(row.cooldown_until);
+      dataCooldownUntil = cooldownUntilAttr(row.cooldown_until);
+    }
+    const dataAttr = dataCooldownUntil ? ` data-cooldown-until="${escapeHtml(dataCooldownUntil)}"` : "";
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<span class="status ${statusClass}"${dataAttr}${titleAttr}>${escapeHtml(statusText)}</span>`;
+  }
+
   function renderTable(rows) {
     if (!els.standbyTableBody) return;
     if (!rows.length) {
@@ -106,7 +121,6 @@ export function createStandbyFeature({
       const email = normalizeEmail(row?.email);
       const enabled = String(row?.status || "") !== "disabled";
       const isBusy = rowIsBusy(email);
-      const statusLabel = String(row?.status || "--");
       const lastUsed = row?.last_used_at ? formatDate(row.last_used_at) : "--";
       const tokenExpire = row?.token_expire ? formatDate(row.token_expire) : (row?.expire ? formatDate(row.expire) : "--");
       const plan = String(row?.plan_type || "--");
@@ -147,7 +161,7 @@ export function createStandbyFeature({
               >${state.deletingEmails.has(email) ? "删除中..." : "删除"}</button>
             </div>
           </td>
-          <td data-label="状态"><span class="status ${escapeHtml(statusLabel)}">${escapeHtml(statusLabel)}</span></td>
+          <td data-label="状态">${buildStatusCell(row)}</td>
           <td data-label="套餐">${escapeHtml(plan)}</td>
           <td data-label="最后使用">${escapeHtml(lastUsed)}</td>
           <td data-label="Token 过期">${escapeHtml(tokenExpire)}</td>
@@ -534,6 +548,7 @@ export function createStandbyFeature({
     if (state.initialized) return;
     state.initialized = true;
     bindEvents();
+    ensureCooldownTicker();
   }
 
   return {

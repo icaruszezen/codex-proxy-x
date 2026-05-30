@@ -1,5 +1,5 @@
 import { isCredentialError, requestAccountDelete, requestAccountsExport, requestAccountToggleEnabled, requestCheckQuota, requestRecoverAuth, requestStatsPage } from "./api.js";
-import { buildAlert, escapeHtml, formatDate, formatNumber } from "./ui.js";
+import { buildAlert, cooldownStatusText, cooldownStatusTitle, cooldownUntilAttr, ensureCooldownTicker, escapeHtml, formatDate, formatNumber, formatRemainingDuration } from "./ui.js";
 
 const CACHE_KEY = "stats_cache_v3";
 
@@ -645,24 +645,23 @@ export function createStatsFeature({
     return 0;
   }
 
-  function formatResets(seconds) {
-    const total = Math.max(0, Math.floor(Number(seconds) || 0));
-    if (total <= 0) {
-      return "";
+  function buildStatusCell(row) {
+    const statusClass = ["active", "cooldown", "disabled"].includes(row.status) ? row.status : "disabled";
+    const refreshDisabledReason = String(row.refresh_disabled_reason || "").trim();
+    const refreshDisabledBadge = row.refresh_disabled
+      ? ` <span class="status refresh-disabled" title="${escapeHtml(refreshDisabledReason || "refresh 凭据不可用")}">不可刷新</span>`
+      : "";
+    let statusText = String(row.status || "--");
+    let title = "";
+    let dataCooldownUntil = "";
+    if (row.status === "cooldown") {
+      statusText = cooldownStatusText(row.cooldown_until);
+      title = cooldownStatusTitle(row.cooldown_until);
+      dataCooldownUntil = cooldownUntilAttr(row.cooldown_until);
     }
-    const days = Math.floor(total / 86400);
-    const hours = Math.floor((total - days * 86400) / 3600);
-    const minutes = Math.floor((total - days * 86400 - hours * 3600) / 60);
-    if (days > 0) {
-      return `${days}d${String(hours).padStart(2, "0")}h`;
-    }
-    if (hours > 0) {
-      return `${hours}h${String(minutes).padStart(2, "0")}m`;
-    }
-    if (minutes > 0) {
-      return `${minutes}m`;
-    }
-    return `${total}s`;
+    const dataAttr = dataCooldownUntil ? ` data-cooldown-until="${escapeHtml(dataCooldownUntil)}"` : "";
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<span class="status ${statusClass}"${dataAttr}${titleAttr}>${escapeHtml(statusText)}</span>${refreshDisabledBadge}`;
   }
 
   function buildQuotaCell(row, key) {
@@ -676,7 +675,7 @@ export function createStatsFeature({
     }
     const remainingRaw = finiteNumber(info.remaining_percent);
     const remaining = remainingRaw === null ? Math.max(0, Math.min(100, 100 - used)) : Math.max(0, Math.min(100, remainingRaw));
-    const resetText = formatResets(quotaResetSeconds(info));
+    const resetText = formatRemainingDuration(quotaResetSeconds(info));
     const low = remaining < 2;
     return `
       <span class="quota-cell ${low ? "quota-low" : ""}">
@@ -699,11 +698,6 @@ export function createStatsFeature({
     for (const row of state.currentRows) {
       const tr = document.createElement("tr");
       const usage = row.usage || {};
-      const statusClass = ["active", "cooldown", "disabled"].includes(row.status) ? row.status : "disabled";
-      const refreshDisabledReason = String(row.refresh_disabled_reason || "").trim();
-      const refreshDisabledBadge = row.refresh_disabled
-        ? ` <span class="status refresh-disabled" title="${escapeHtml(refreshDisabledReason || "refresh 凭据不可用")}">不可刷新</span>`
-        : "";
       const email = String(row.email || "").trim();
       const emailCell = email
         ? `
@@ -718,7 +712,7 @@ export function createStatsFeature({
       tr.innerHTML = `
         <td data-label="选择">${buildSelectCheckbox(email)}</td>
         <td data-label="邮箱">${emailCell}</td>
-        <td data-label="状态"><span class="status ${statusClass}">${escapeHtml(row.status || "--")}</span>${refreshDisabledBadge}</td>
+        <td data-label="状态">${buildStatusCell(row)}</td>
         <td data-label="套餐">${escapeHtml(row.plan_type || "--")}</td>
         <td data-label="请求数">${formatNumber(row.total_requests)}</td>
         <td data-label="错误">${formatNumber(row.total_errors)}</td>
@@ -1190,6 +1184,7 @@ export function createStatsFeature({
     }
     updateCacheBadge();
     bindEvents();
+    ensureCooldownTicker();
   }
 
   return {

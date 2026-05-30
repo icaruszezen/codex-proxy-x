@@ -359,6 +359,7 @@ tr:hover td {
 .status.cooldown {
   background: #ffe4e6;
   color: #9f1239;
+  white-space: nowrap;
 }
 
 .status.disabled {
