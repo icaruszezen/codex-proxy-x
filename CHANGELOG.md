@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.15.1...v1.16.0) (2026-05-30)
+
+
+### ✨ 新功能
+
+* 发版 ([c33f9fa](https://github.com/icaruszezen/codex-proxy-x/commit/c33f9fa91270737522d2942d6ec6216788a091d0))
+
 ## [1.15.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.15.0...v1.15.1) (2026-05-26)
 
 
