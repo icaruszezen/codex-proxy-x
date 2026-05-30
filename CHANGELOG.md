@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.16.0...v1.16.1) (2026-05-30)
+
+
+### 🐛 错误修复
+
+* 稳定性加强 ([4846306](https://github.com/icaruszezen/codex-proxy-x/commit/4846306d31607886abf593c6ebe5cd6957126bfc))
+
 ## [1.16.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.15.1...v1.16.0) (2026-05-30)
 
 
