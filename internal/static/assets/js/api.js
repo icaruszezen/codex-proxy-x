@@ -141,6 +141,61 @@ export async function requestStatsPage(cred, options = {}, signal) {
   return normalizeStatsResponse(await res.json(), options);
 }
 
+export async function requestCheckQuota(cred, onEvent, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/check-quota"), {
+    method: "POST",
+    headers: buildHeaders(cred, {
+      Accept: "text/event-stream"
+    }),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) {
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const emitBlock = block => {
+    const dataLines = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+    const raw = dataLines.join("");
+    if (!raw) {
+      return;
+    }
+    try {
+      onEvent?.(JSON.parse(raw));
+    } catch (error) {
+      /* 忽略单条 SSE 解析失败 */
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      emitBlock(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 2);
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    emitBlock(buffer);
+  }
+}
+
 export function getImportContentType(format) {
   return format === "ndjson" ? "text/plain" : "application/json";
 }

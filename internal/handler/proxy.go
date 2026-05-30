@@ -477,6 +477,7 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 			if statusCode >= 200 && statusCode < 300 {
 				return
 			}
+			managerOf(acc).ScheduleQuotaCheckAfterUpstreamFailure(acc, h.quotaChecker, statusCode)
 			/* 冷却或限频后失效选号缓存；502/503/504 同步失效，避免大量请求继续撞同一批刚失败的号 */
 			if statusCode == 429 || statusCode == 403 || statusCode == 502 || statusCode == 503 || statusCode == 504 {
 				managerOf(acc).InvalidateSelectorCache()
@@ -505,6 +506,10 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 			verdict := h.quotaChecker.CheckAccountResult(ctx, acc)
 			switch verdict {
 			case 1:
+				if managerOf(acc).ApplyQuotaThreshold(acc) {
+					log.Warnf("账号 [%s] 额度低于阈值，跳过发送并换号", acc.GetEmail())
+					return false
+				}
 				return true
 			case -1:
 				log.Warnf("账号 [%s] 额度接口判定无效，跳过发送", acc.GetEmail())

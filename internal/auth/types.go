@@ -121,6 +121,9 @@ type Account struct {
 
 	/* 上游 429 后的额度恢复流程，防止同一账号堆积多个恢复 goroutine */
 	upstream429Recovering atomic.Int32
+
+	/* 上游请求失败后的额度探测，防止同一账号堆积多个 wham 查询 */
+	upstreamFailureQuotaChecking atomic.Int32
 }
 
 /**
@@ -265,10 +268,21 @@ type UsageStats struct {
  * @field RawJSON - 原始响应 JSON（透传展示）
  */
 type QuotaInfo struct {
-	Valid      bool            `json:"valid"`
-	StatusCode int             `json:"status_code"`
-	RawData    json.RawMessage `json:"raw_data,omitempty"`
-	CheckedAt  time.Time       `json:"checked_at"`
+	Valid           bool             `json:"valid"`
+	StatusCode      int              `json:"status_code"`
+	RawData         json.RawMessage  `json:"raw_data,omitempty"`
+	CheckedAt       time.Time        `json:"checked_at"`
+	PrimaryWindow   *QuotaWindowInfo `json:"primary_window,omitempty"`
+	SecondaryWindow *QuotaWindowInfo `json:"secondary_window,omitempty"`
+}
+
+/* QuotaWindowInfo 表示 wham/usage 返回的单个额度窗口 */
+type QuotaWindowInfo struct {
+	UsedPercent      float64    `json:"used_percent"`
+	RemainingPercent float64    `json:"remaining_percent"`
+	WindowMinutes    float64    `json:"window_minutes"`
+	ResetsInSeconds  int64      `json:"resets_in_seconds"`
+	ResetAt          *time.Time `json:"reset_at,omitempty"`
 }
 
 /**
@@ -518,7 +532,11 @@ func (a *Account) SetCooldown(duration time.Duration) {
  * @param duration - 冷却持续时间
  */
 func (a *Account) SetQuotaCooldown(duration time.Duration) {
-	until := time.Now().Add(duration)
+	a.SetQuotaCooldownUntil(time.Now().Add(duration))
+}
+
+/* SetQuotaCooldownUntil 设置配额冷却到指定刷新时刻 */
+func (a *Account) SetQuotaCooldownUntil(until time.Time) {
 	a.mu.Lock()
 	a.Status = StatusCooldown
 	a.CooldownUntil = until
@@ -530,6 +548,26 @@ func (a *Account) SetQuotaCooldown(duration time.Duration) {
 	a.atomicStatus.Store(int32(StatusCooldown))
 	a.atomicCooldownMs.Store(until.UnixMilli())
 	a.atomicUsedPct.Store(10000) /* 100.00% */
+}
+
+/* ClearQuotaCooldown 如果账号正处于额度冷却，则恢复为可用状态 */
+func (a *Account) ClearQuotaCooldown() bool {
+	a.mu.Lock()
+	if a.Status != StatusCooldown || !a.QuotaExhausted {
+		a.mu.Unlock()
+		return false
+	}
+	a.Status = StatusActive
+	a.LastError = nil
+	a.ConsecutiveFailures = 0
+	a.DisableReason = ReasonNone
+	a.QuotaExhausted = false
+	a.QuotaResetsAt = time.Time{}
+	a.mu.Unlock()
+
+	a.atomicStatus.Store(int32(StatusActive))
+	a.atomicCooldownMs.Store(0)
+	return true
 }
 
 /**
@@ -667,6 +705,10 @@ func (a *Account) RefreshUsedPercent() {
 		return
 	}
 
+	if qi.PrimaryWindow != nil {
+		a.atomicUsedPct.Store(int64(qi.PrimaryWindow.UsedPercent * 100))
+		return
+	}
 	result := gjson.GetBytes(qi.RawData, "rate_limit.primary_window.used_percent")
 	if !result.Exists() {
 		a.atomicUsedPct.Store(-100)
@@ -674,6 +716,26 @@ func (a *Account) RefreshUsedPercent() {
 	}
 	/* 存储为定点数：percent * 100 */
 	a.atomicUsedPct.Store(int64(result.Float() * 100))
+}
+
+func (a *Account) quotaPrimaryWindowSnapshot() *QuotaWindowInfo {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.QuotaInfo == nil || a.QuotaInfo.PrimaryWindow == nil {
+		return nil
+	}
+	cp := *a.QuotaInfo.PrimaryWindow
+	return &cp
+}
+
+func (a *Account) quotaSecondaryWindowSnapshot() *QuotaWindowInfo {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.QuotaInfo == nil || a.QuotaInfo.SecondaryWindow == nil {
+		return nil
+	}
+	cp := *a.QuotaInfo.SecondaryWindow
+	return &cp
 }
 
 /**

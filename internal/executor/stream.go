@@ -191,6 +191,9 @@ func (e *Executor) openCodexResponsesBody(ctx context.Context, rc RetryConfig, r
 			_ = httpResp.Body.Close()
 			acc.RecordFailure()
 			handleAccountError(acc, 429, codexQuotaPayloadForCooldown(prelude.Bytes()))
+			if rc.OnAfterUpstreamErrFn != nil {
+				rc.OnAfterUpstreamErrFn(acc, 429)
+			}
 			if rc.On429RecoveryFn != nil {
 				go rc.On429RecoveryFn(context.Background(), acc)
 			}
@@ -204,6 +207,9 @@ func (e *Executor) openCodexResponsesBody(ctx context.Context, rc RetryConfig, r
 		if probeErr != nil && probeErr != io.EOF {
 			_ = httpResp.Body.Close()
 			acc.RecordFailure()
+			if rc.OnAfterUpstreamErrFn != nil {
+				rc.OnAfterUpstreamErrFn(acc, 0)
+			}
 			if isRetryableUpstreamReadErr(probeErr) && round+1 < readRounds {
 				excluded[acc.FilePath] = true
 				log.Warnf("responses-stream 首读失败，换号/重建连接重试 (%d/%d) account=%s: %v", round+1, readRounds, acc.GetEmail(), wrapReadErr(probeErr))
@@ -216,6 +222,9 @@ func (e *Executor) openCodexResponsesBody(ctx context.Context, rc RetryConfig, r
 		if len(pr) == 0 && probeErr == io.EOF {
 			_ = httpResp.Body.Close()
 			acc.RecordFailure()
+			if rc.OnAfterUpstreamErrFn != nil {
+				rc.OnAfterUpstreamErrFn(acc, 0)
+			}
 			if round+1 < readRounds {
 				excluded[acc.FilePath] = true
 				log.Warnf("responses-stream 上游立即 EOF，换号重试 (%d/%d) account=%s", round+1, readRounds, acc.GetEmail())

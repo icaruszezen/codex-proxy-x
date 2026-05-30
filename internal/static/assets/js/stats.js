@@ -1,7 +1,7 @@
-import { isCredentialError, requestAccountDelete, requestAccountsExport, requestAccountToggleEnabled, requestRecoverAuth, requestStatsPage } from "./api.js";
+import { isCredentialError, requestAccountDelete, requestAccountsExport, requestAccountToggleEnabled, requestCheckQuota, requestRecoverAuth, requestStatsPage } from "./api.js";
 import { buildAlert, escapeHtml, formatDate, formatNumber } from "./ui.js";
 
-const CACHE_KEY = "stats_cache_v2";
+const CACHE_KEY = "stats_cache_v3";
 
 function formatDurationText(value) {
   const durationMs = Number(value ?? 0);
@@ -226,7 +226,9 @@ export function createStatsFeature({
     togglingEmails: new Set(),
     deletingEmails: new Set(),
     selectedEmails: new Set(),
-    isExporting: false
+    isExporting: false,
+    isCheckingQuota: false,
+    quotaCheckController: null
   };
 
   function safeGetCacheRaw() {
@@ -296,9 +298,18 @@ export function createStatsFeature({
     els.recoverAllBtn.textContent = state.isRecoveringAll ? "批量恢复中..." : "批量 401 恢复";
   }
 
+  function updateQuotaCheckButton(label = "") {
+    if (!els.quotaCheckBtn) {
+      return;
+    }
+    els.quotaCheckBtn.disabled = state.isCheckingQuota;
+    els.quotaCheckBtn.textContent = state.isCheckingQuota ? (label || "查询中...") : "查询额度";
+  }
+
   function updateExportControls() {
     const selectedCount = state.selectedEmails.size;
     const isBusy = state.isExporting
+      || state.isCheckingQuota
       || state.isRecoveringAll
       || state.recoveringEmails.size > 0
       || state.togglingEmails.size > 0
@@ -595,6 +606,86 @@ export function createStatsFeature({
     `;
   }
 
+  function finiteNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function quotaWindowFromRow(row, key) {
+    const quota = row?.quota;
+    const direct = quota?.[key];
+    if (direct && typeof direct === "object") {
+      return direct;
+    }
+    const raw = quota?.raw_data;
+    const rateLimit = raw && typeof raw === "object" ? raw.rate_limit : null;
+    const fallback = rateLimit?.[key];
+    return fallback && typeof fallback === "object" ? fallback : null;
+  }
+
+  function quotaResetSeconds(info) {
+    const direct = finiteNumber(info?.resets_in_seconds ?? info?.reset_after_seconds);
+    if (direct !== null && direct > 0) {
+      return Math.ceil(direct);
+    }
+    const resetAt = finiteNumber(info?.reset_at ?? info?.resets_at);
+    if (resetAt !== null && resetAt > 0) {
+      const nowSeconds = Date.now() / 1000;
+      const remaining = Math.ceil(resetAt - nowSeconds);
+      return remaining > 0 ? remaining : 0;
+    }
+    const resetText = String(info?.reset_at ?? info?.resets_at ?? "").trim();
+    if (resetText) {
+      const resetMs = Date.parse(resetText);
+      if (Number.isFinite(resetMs)) {
+        const remaining = Math.ceil((resetMs - Date.now()) / 1000);
+        return remaining > 0 ? remaining : 0;
+      }
+    }
+    return 0;
+  }
+
+  function formatResets(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (total <= 0) {
+      return "";
+    }
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total - days * 86400) / 3600);
+    const minutes = Math.floor((total - days * 86400 - hours * 3600) / 60);
+    if (days > 0) {
+      return `${days}d${String(hours).padStart(2, "0")}h`;
+    }
+    if (hours > 0) {
+      return `${hours}h${String(minutes).padStart(2, "0")}m`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m`;
+    }
+    return `${total}s`;
+  }
+
+  function buildQuotaCell(row, key) {
+    const info = quotaWindowFromRow(row, key);
+    if (!info) {
+      return `<span class="quota-cell quota-empty">${row?.quota_exhausted ? "已用尽" : "--"}</span>`;
+    }
+    const used = finiteNumber(info.used_percent);
+    if (used === null) {
+      return `<span class="quota-cell quota-empty">--</span>`;
+    }
+    const remainingRaw = finiteNumber(info.remaining_percent);
+    const remaining = remainingRaw === null ? Math.max(0, Math.min(100, 100 - used)) : Math.max(0, Math.min(100, remainingRaw));
+    const resetText = formatResets(quotaResetSeconds(info));
+    const low = remaining < 2;
+    return `
+      <span class="quota-cell ${low ? "quota-low" : ""}">
+        <strong>剩余 ${remaining.toFixed(1)}%</strong>
+        <small>已用 ${used.toFixed(1)}%${resetText ? ` · 刷新 ${resetText}` : ""}</small>
+      </span>
+    `;
+  }
+
   function renderTable(rows, pageMeta) {
     state.currentRows = rows || [];
     state.pagination = pageMeta || null;
@@ -635,7 +726,8 @@ export function createStatsFeature({
         <td data-label="输出 Token">${formatNumber(usage.output_tokens)}</td>
         <td data-label="最后使用">${formatDate(row.last_used_at)}</td>
         <td data-label="Token 过期">${formatDate(row.token_expire)}</td>
-        <td data-label="额度">${row.quota_exhausted ? "已用尽" : "可用"}</td>
+        <td data-label="5h 额度">${buildQuotaCell(row, "primary_window")}</td>
+        <td data-label="周额度">${buildQuotaCell(row, "secondary_window")}</td>
       `;
       fragment.appendChild(tr);
     }
@@ -650,6 +742,7 @@ export function createStatsFeature({
     els.prevBtn.disabled = state.currentPage === 1;
     els.nextBtn.disabled = state.currentPage === totalPages;
     updateRecoverAllButton();
+    updateQuotaCheckButton();
     updateExportControls();
   }
 
@@ -687,7 +780,7 @@ export function createStatsFeature({
     return requestStatsPage(cred, {
       page: state.currentPage,
       pageSize: state.pageSize,
-      includeQuota: false,
+      includeQuota: true,
       query: els.searchInput.value.trim(),
       status: state.statusFilter
     }, signal);
@@ -878,6 +971,63 @@ export function createStatsFeature({
     }
   }
 
+  async function handleCheckQuota() {
+    if (state.isCheckingQuota) {
+      return;
+    }
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials();
+      return;
+    }
+    state.isCheckingQuota = true;
+    const controller = new AbortController();
+    state.quotaCheckController = controller;
+    updateQuotaCheckButton("查询中...");
+    updateExportControls();
+    setActionState(buildAlert("info", "已开始查询额度", escapeHtml("正在通过后端 /check-quota 查询全部账号额度，请稍候。")));
+    let doneEvent = null;
+    try {
+      await requestCheckQuota(cred, event => {
+        const type = String(event?.type || "");
+        if (type === "item") {
+          const current = Number(event?.current ?? 0) || 0;
+          const total = Number(event?.total ?? 0) || 0;
+          updateQuotaCheckButton(total > 0 ? `查询 ${current}/${total}` : "查询中...");
+          return;
+        }
+        if (type === "done") {
+          doneEvent = event;
+          updateQuotaCheckButton("刷新列表...");
+        }
+      }, controller.signal);
+      clearCache();
+      await fetchStats({ showLoading: false });
+      const total = Number(doneEvent?.total ?? 0) || 0;
+      const success = Number(doneEvent?.success_count ?? 0) || 0;
+      const failed = Number(doneEvent?.failed_count ?? 0) || 0;
+      const duration = String(doneEvent?.duration || "");
+      setActionState(buildAlert(
+        "success",
+        "额度查询完成",
+        escapeHtml(`已查询 ${formatNumber(total)} 个账号，有效 ${formatNumber(success)}，失败 ${formatNumber(failed)}${duration ? `，耗时 ${duration}` : ""}。统计列表已刷新。`)
+      ));
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+      handleRecoverError("额度查询失败", error);
+    } finally {
+      if (state.quotaCheckController === controller) {
+        state.quotaCheckController = null;
+      }
+      state.isCheckingQuota = false;
+      updateQuotaCheckButton();
+      updateExportControls();
+      renderTable(state.currentRows, state.pagination);
+    }
+  }
+
   async function fetchStats(options = {}) {
     const { showLoading = true } = options;
     els.cacheState.textContent = "缓存：加载中...";
@@ -946,6 +1096,9 @@ export function createStatsFeature({
       clearCache();
       showPlaceholder(true);
       void fetchStats();
+    });
+    els.quotaCheckBtn?.addEventListener("click", () => {
+      void handleCheckQuota();
     });
     els.clearBtn.addEventListener("click", () => {
       clearCache();
@@ -1025,6 +1178,7 @@ export function createStatsFeature({
     state.initialized = true;
     setActionState("");
     updateRecoverAllButton();
+    updateQuotaCheckButton();
     updateExportControls();
     const existing = getCache();
     if (existing?.data) {

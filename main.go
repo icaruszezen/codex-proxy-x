@@ -308,6 +308,7 @@ func main() {
 
 	/* 启动后台 Token 刷新 */
 	go manager.StartRefreshLoop(ctx)
+	go manager.StartQuotaCooldownRecheckLoop(ctx, quotaChecker)
 
 	/* 健康检查器：主池循环按配置间隔启动；备用池手动按钮共享同一实例（HealthChecker stateless） */
 	healthChecker := auth.NewHealthChecker(

@@ -413,6 +413,9 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 				account.RecordFailure()
 				netErr := fmt.Errorf("请求发送失败: %w", err)
 				log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=ERR err=%v", model, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), err)
+				if rc.OnAfterUpstreamErrFn != nil {
+					rc.OnAfterUpstreamErrFn(account, 0)
+				}
 				return nil, netErr
 			}
 

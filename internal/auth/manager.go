@@ -1836,6 +1836,8 @@ func (m *Manager) runQuotaStatusPolicy(ctx context.Context, qc *QuotaChecker, ac
 		}
 		v2, st2 := qc.checkAccount(ctx, acc)
 		if v2 == 1 {
+			acc.RefreshUsedPercent()
+			m.ApplyQuotaThreshold(acc)
 			m.InvalidateSelectorCache()
 			return QuotaApplyNone
 		}
@@ -1853,6 +1855,8 @@ func (m *Manager) runQuotaStatusPolicy(ctx context.Context, qc *QuotaChecker, ac
 		}
 		v2, st2 := qc.checkAccount(ctx, acc)
 		if v2 == 1 {
+			acc.RefreshUsedPercent()
+			m.ApplyQuotaThreshold(acc)
 			m.InvalidateSelectorCache()
 			return QuotaApplyNone
 		}
@@ -1938,6 +1942,71 @@ func (m *Manager) RunHealthCheckOnce(ctx context.Context, hc *HealthChecker) <-c
 	return hc.RunOnceWithProgress(ctx, m)
 }
 
+/* ApplyQuotaThreshold 根据最近一次 wham/usage 结果应用 5h/周额度低余量冷却规则 */
+func (m *Manager) ApplyQuotaThreshold(acc *Account) bool {
+	if m == nil || acc == nil || !m.AccountInPool(acc) {
+		return false
+	}
+	acc.mu.RLock()
+	status := acc.Status
+	manualDisabled := status == StatusDisabled && acc.DisableReason == ReasonManualDisabled
+	qi := acc.QuotaInfo
+	acc.mu.RUnlock()
+	if status == StatusDisabled || manualDisabled || qi == nil || !qi.Valid {
+		return false
+	}
+	now := time.Now()
+	decision, low := quotaCooldownForInfo(qi, now)
+	if low {
+		acc.SetQuotaCooldownUntil(decision.Until)
+		m.InvalidateSelectorCache()
+		if m.db != nil {
+			m.enqueueSave(acc)
+		}
+		log.Warnf("账号 [%s] %s 额度剩余 %.2f%%，已冷却至 %s",
+			acc.GetEmail(), decision.Window, decision.RemainingPercent, decision.Until.Format(time.RFC3339))
+		return true
+	}
+	if acc.ClearQuotaCooldown() {
+		acc.RefreshUsedPercent()
+		m.InvalidateSelectorCache()
+		if m.db != nil {
+			m.enqueueSave(acc)
+		}
+		log.Infof("账号 [%s] 额度已恢复，主动取消冷却", acc.GetEmail())
+		return true
+	}
+	return false
+}
+
+/* ScheduleQuotaCheckAfterUpstreamFailure 在上游请求失败后异步查询该账号额度，不阻塞当前换号重试 */
+func (m *Manager) ScheduleQuotaCheckAfterUpstreamFailure(acc *Account, qc *QuotaChecker, statusCode int) {
+	if m == nil || qc == nil || acc == nil {
+		return
+	}
+	if !m.AccountInPool(acc) || acc.IsManuallyDisabled() {
+		return
+	}
+	if !acc.upstreamFailureQuotaChecking.CompareAndSwap(0, 1) {
+		return
+	}
+	go func() {
+		defer acc.upstreamFailureQuotaChecking.Store(0)
+		qctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		verdict, quotaStatus := qc.CheckAccountResultWithStatus(qctx, acc)
+		if verdict != 1 {
+			log.Debugf("账号 [%s] 上游失败后额度探测未得到有效额度: upstream_status=%d quota_verdict=%d quota_status=%d",
+				acc.GetEmail(), statusCode, verdict, quotaStatus)
+			return
+		}
+		acc.RefreshUsedPercent()
+		if m.ApplyQuotaThreshold(acc) {
+			log.Warnf("账号 [%s] 上游失败后额度探测触发冷却: upstream_status=%d", acc.GetEmail(), statusCode)
+		}
+	}()
+}
+
 func (m *Manager) effectiveQuotaAfterRefresh(qcArg *QuotaChecker) *QuotaChecker {
 	if qcArg != nil {
 		return qcArg
@@ -1967,6 +2036,7 @@ func (m *Manager) applyPostRefreshQuotaOutcome(ctx context.Context, qc *QuotaChe
 	switch verdict {
 	case 1:
 		acc.RefreshUsedPercent()
+		m.ApplyQuotaThreshold(acc)
 		return true
 	case 2:
 		_ = m.ApplyQuotaUsageHTTPOutcome(ctx, qc, acc, st, verdict)
@@ -2026,6 +2096,82 @@ func (m *Manager) StartRefreshLoop(ctx context.Context) {
 			m.refreshAllAccountsConcurrent(ctx)
 		}
 	}
+}
+
+/* StartQuotaCooldownRecheckLoop 每 30 分钟复查额度冷却账号，额度恢复则主动解除冷却 */
+func (m *Manager) StartQuotaCooldownRecheckLoop(ctx context.Context, qc *QuotaChecker) {
+	if m == nil || qc == nil {
+		return
+	}
+	const interval = 30 * time.Minute
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	log.Infof("额度冷却复查已启动，间隔 %v", interval)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("额度冷却复查已停止")
+			return
+		case <-m.stopCh:
+			log.Info("额度冷却复查已停止")
+			return
+		case <-ticker.C:
+			m.recheckQuotaCooldownAccounts(ctx, qc)
+		}
+	}
+}
+
+func (m *Manager) recheckQuotaCooldownAccounts(ctx context.Context, qc *QuotaChecker) {
+	accounts := m.GetAccounts()
+	if len(accounts) == 0 {
+		return
+	}
+	candidates := make([]*Account, 0)
+	for _, acc := range accounts {
+		if shouldRecheckQuotaCooldown(acc) {
+			candidates = append(candidates, acc)
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	concurrency := qc.concurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	log.Infof("开始复查 %d 个额度冷却账号（并发 %d）", len(candidates), concurrency)
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, acc := range candidates {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(a *Account) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			qctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			verdict, status := qc.CheckAccountResultWithStatus(qctx, a)
+			if verdict != 1 {
+				log.Debugf("账号 [%s] 额度冷却复查暂未恢复，verdict=%d status=%d", a.GetEmail(), verdict, status)
+				return
+			}
+			a.RefreshUsedPercent()
+			m.ApplyQuotaThreshold(a)
+		}(acc)
+	}
+	wg.Wait()
+}
+
+func shouldRecheckQuotaCooldown(acc *Account) bool {
+	if acc == nil {
+		return false
+	}
+	acc.mu.RLock()
+	defer acc.mu.RUnlock()
+	return acc.Status == StatusCooldown && acc.QuotaExhausted && acc.DisableReason != ReasonManualDisabled
 }
 
 /**
@@ -2325,16 +2471,19 @@ func (m *Manager) filterNeedRefresh(accounts []*Account) []*Account {
  * @field Current - 当前进度序号
  */
 type ProgressEvent struct {
-	Type         string `json:"type"`
-	Email        string `json:"email,omitempty"`
-	Success      *bool  `json:"success,omitempty"`
-	Message      string `json:"message,omitempty"`
-	Total        int    `json:"total,omitempty"`
-	SuccessCount int    `json:"success_count,omitempty"`
-	FailedCount  int    `json:"failed_count,omitempty"`
-	Remaining    int    `json:"remaining,omitempty"`
-	Duration     string `json:"duration,omitempty"`
-	Current      int    `json:"current,omitempty"`
+	Type            string           `json:"type"`
+	Email           string           `json:"email,omitempty"`
+	Success         *bool            `json:"success,omitempty"`
+	Message         string           `json:"message,omitempty"`
+	Total           int              `json:"total,omitempty"`
+	SuccessCount    int              `json:"success_count,omitempty"`
+	FailedCount     int              `json:"failed_count,omitempty"`
+	Remaining       int              `json:"remaining,omitempty"`
+	Duration        string           `json:"duration,omitempty"`
+	Current         int              `json:"current,omitempty"`
+	StatusCode      int              `json:"status_code,omitempty"`
+	PrimaryWindow   *QuotaWindowInfo `json:"primary_window,omitempty"`
+	SecondaryWindow *QuotaWindowInfo `json:"secondary_window,omitempty"`
 }
 
 /**
@@ -2840,6 +2989,8 @@ func (m *Manager) ScheduleUpstream429Recovery(_ context.Context, acc *Account, q
 		v1, st1 := qc.CheckAccountResultWithStatus(qctx, acc)
 		cancel()
 		if v1 == 1 {
+			acc.RefreshUsedPercent()
+			m.ApplyQuotaThreshold(acc)
 			return
 		}
 		m.ApplyQuotaUsageHTTPOutcome(context.Background(), qc, acc, st1, v1)
@@ -2909,6 +3060,8 @@ func (m *Manager) ScheduleUpstream429Recovery(_ context.Context, acc *Account, q
 				if !acc.IsManuallyDisabled() {
 					acc.SetActive()
 				}
+				acc.RefreshUsedPercent()
+				m.ApplyQuotaThreshold(acc)
 				if m.db != nil {
 					m.enqueueSave(acc)
 				}

@@ -154,6 +154,8 @@ func (qc *QuotaChecker) CheckAllStream(ctx context.Context, manager *Manager) <-
 				case 1:
 					validCount.Add(1)
 					ok = true
+					a.RefreshUsedPercent()
+					manager.ApplyQuotaThreshold(a)
 				case 0:
 					failCount.Add(1)
 				default:
@@ -166,11 +168,14 @@ func (qc *QuotaChecker) CheckAllStream(ctx context.Context, manager *Manager) <-
 				}
 
 				ch <- ProgressEvent{
-					Type:    "item",
-					Email:   email,
-					Success: &ok,
-					Current: cur,
-					Total:   total,
+					Type:            "item",
+					Email:           email,
+					Success:         &ok,
+					Current:         cur,
+					Total:           total,
+					StatusCode:      st,
+					PrimaryWindow:   a.quotaPrimaryWindowSnapshot(),
+					SecondaryWindow: a.quotaSecondaryWindowSnapshot(),
 				}
 			}(acc)
 		}
@@ -322,6 +327,7 @@ func (qc *QuotaChecker) checkAccount(ctx context.Context, acc *Account) (verdict
 		/* 存储原始 JSON 响应 */
 		if json.Valid(body) {
 			info.RawData = body
+			info.PrimaryWindow, info.SecondaryWindow = parseQuotaWindows(info.RawData, now)
 		}
 		acc.mu.Lock()
 		acc.QuotaInfo = info

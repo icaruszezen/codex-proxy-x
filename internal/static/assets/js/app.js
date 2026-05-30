@@ -25,6 +25,7 @@ const els = {
   qmsgViewBtn: document.getElementById("qmsgViewBtn"),
   newapiViewBtn: document.getElementById("newapiViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
+  quotaCheckBtn: document.getElementById("quotaCheckBtn"),
   clearBtn: document.getElementById("clearBtn"),
   recoverAllBtn: document.getElementById("recoverAllBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
