@@ -435,6 +435,118 @@ tr:hover td {
   font-family: inherit;
 }
 
+.debug-trace-list {
+  display: grid;
+  gap: 16px;
+}
+
+.debug-trace-item {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #f0e7d7;
+  border-radius: 16px;
+  background: #fffdf7;
+}
+
+.debug-trace-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.debug-trace-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.debug-trace-time {
+  font-weight: 600;
+}
+
+.debug-trace-duration {
+  color: #6b7280;
+  font-size: 0.92rem;
+}
+
+.debug-trace-error {
+  margin: 8px 0 0;
+  color: #b42318;
+  word-break: break-word;
+}
+
+.debug-pill-success {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.debug-pill-error {
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.debug-step-list {
+  display: grid;
+  gap: 10px;
+}
+
+.debug-step-block {
+  border: 1px solid #ece5d8;
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.debug-step-block summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.debug-step-name {
+  font-weight: 600;
+}
+
+.debug-step-phase {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.debug-step-body {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.debug-step-meta {
+  margin: 0;
+  color: #374151;
+  word-break: break-all;
+}
+
+.debug-step-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  overflow: auto;
+  max-height: 320px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.debug-traces-panel {
+  gap: 14px;
+}
+
 .recent-events-panel {
   gap: 14px;
 }

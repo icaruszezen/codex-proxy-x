@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"codex-proxy/internal/apidebug"
 	"codex-proxy/internal/auth"
 	"codex-proxy/internal/config"
 	codexdb "codex-proxy/internal/db"
@@ -222,6 +223,11 @@ func main() {
 		log.Fatalf("初始化上游提供商配置失败: %v", err)
 	}
 	upstreamProviderService.SetQmsgService(qmsgService)
+
+	apiDebugStore, err := apidebug.NewStore(apidebug.DefaultConfigPath(cfg.AuthDir))
+	if err != nil {
+		log.Fatalf("初始化 API 调试服务失败: %v", err)
+	}
 	manager.SetAccountEventNotifier(qmsgService)
 	if qmsgService.PublicConfig(false).Configured {
 		log.Infof("qmsg 通知配置已加载")
@@ -390,7 +396,7 @@ func main() {
 	r := router.New()
 	r.GET("/assets/{filepath:*}", static.HandleAsset)
 	r.HEAD("/assets/{filepath:*}", static.HandleAsset)
-	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, newapiService, upstreamProviderService, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, standbyCtrl, healthChecker, static.IndexHTML)
+	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, newapiService, upstreamProviderService, apiDebugStore, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, standbyCtrl, healthChecker, static.IndexHTML)
 	proxyHandler.RegisterRoutes(r)
 	handler.SetupLoginRoutes(r, cfg.AuthDir, cfg.OAuthCallbackPort, cfg.OAuthNoBrowser, cfg.EnableCodexLogin, manager)
 

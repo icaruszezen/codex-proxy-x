@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 
+	"codex-proxy/internal/apidebug"
 	"codex-proxy/internal/executor"
 	"codex-proxy/internal/translator"
 
@@ -116,18 +117,28 @@ func (h *ProxyHandler) handleMessages(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到 Claude Messages 请求: model=%s, stream=%v", model, stream)
 
+	traceSess, traceCtx := h.startAPITrace(ctx, model, stream, body)
 	rc := h.buildRetryConfig()
 
 	if stream {
-		if execErr := h.executeClaudeStream(ctx, rc, openaiBody, model); execErr != nil {
+		if execErr := h.executeClaudeStream(ctx, traceSess, traceCtx, rc, openaiBody, model); execErr != nil {
+			if traceSess != nil {
+				traceSess.finish(false, execErr)
+			}
 			handleClaudeExecutorError(ctx, execErr)
 		} else {
 			RecordRequest()
 		}
 	} else {
-		if execErr := h.executeClaudeNonStream(ctx, rc, openaiBody, model); execErr != nil {
+		if execErr := h.executeClaudeNonStream(ctx, traceSess, traceCtx, rc, openaiBody, model); execErr != nil {
+			if traceSess != nil {
+				traceSess.finish(false, execErr)
+			}
 			handleClaudeExecutorError(ctx, execErr)
 		} else {
+			if traceSess != nil {
+				traceSess.finish(true, nil)
+			}
 			RecordRequest()
 		}
 	}
@@ -144,7 +155,7 @@ func (h *ProxyHandler) handleMessages(ctx *fasthttp.RequestCtx) {
  * @param model - 模型名称
  * @returns error - 执行失败时返回错误
  */
-func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, rc executor.RetryConfig, openaiBody []byte, model string) error {
+func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, traceSess *apiTraceSession, traceCtx context.Context, rc executor.RetryConfig, openaiBody []byte, model string) error {
 	/* 只有到这里才开始写 SSE 头；Open+Pump 在 StreamWriter 内完成，响应体尚无字节时可内部换号与全量重连 */
 	ctx.Response.Header.Set("Content-Type", "text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
@@ -153,15 +164,34 @@ func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, rc executor
 
 	ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
 		sw := newStreamBufWriter(w)
+		out := io.Writer(sw)
+		var traceWriter *apidebug.TraceWriter
+		if traceSess != nil {
+			traceWriter = apidebug.NewTraceWriter(sw, traceSess.collector)
+			out = traceWriter
+		}
 		flush := func() { _ = w.Flush() }
-		if execErr := h.runClaudeStreamWithFallback(context.Background(), openaiBody, model, sw, flush); execErr != nil {
+		if execErr := h.runClaudeStreamWithFallback(traceCtx, openaiBody, model, out, flush); execErr != nil {
 			log.Errorf("Claude stream: %v", execErr)
+			if traceWriter != nil {
+				traceWriter.RecordDownstreamResponse()
+			}
+			if traceSess != nil {
+				traceSess.finish(false, execErr)
+			}
 			msg := execErr.Error()
 			if errors.Is(execErr, executor.ErrEmptyResponse) {
 				msg = "上游未返回有效内容（空响应）"
 			}
 			_, _ = fmt.Fprintf(w, "event: error\ndata: {\"type\":\"error\",\"message\":%q}\n\n", msg)
 			_ = w.Flush()
+			return
+		}
+		if traceWriter != nil {
+			traceWriter.RecordDownstreamResponse()
+		}
+		if traceSess != nil {
+			traceSess.finish(true, nil)
 		}
 	})
 
@@ -182,11 +212,12 @@ func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, rc executor
  * @param model - 模型名称
  * @returns error - 执行失败时返回错误
  */
-func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, rc executor.RetryConfig, openaiBody []byte, model string) error {
-	collected, err := h.executor.CollectCodexResponsesSSE(ctx, rc, openaiBody, model)
+func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, traceSess *apiTraceSession, traceCtx context.Context, rc executor.RetryConfig, openaiBody []byte, model string) error {
+	collected, err := h.executor.CollectCodexResponsesSSE(traceCtx, rc, openaiBody, model)
 	if err != nil && h.shouldTryProviderAfterPrimary(err) {
 		if h.executor.HasProviderFallback() {
-			providerCollected, providerErr := h.executor.CollectProviderResponsesSSE(ctx, openaiBody, model)
+			recordFallbackToProvider(traceCtx, err)
+			providerCollected, providerErr := h.executor.CollectProviderResponsesSSE(traceCtx, openaiBody, model)
 			if providerErr == nil {
 				collected = providerCollected
 				err = nil
@@ -212,9 +243,13 @@ func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, rc execu
 	if collected.Account != nil {
 		collected.Account.RecordSuccess()
 	}
+	responseJSON := []byte(result.JSON)
+	if traceSess != nil {
+		traceSess.recordDownstreamResponse(responseJSON)
+	}
 	ctx.Response.Header.Set("Content-Type", "application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetBody([]byte(result.JSON))
+	ctx.SetBody(responseJSON)
 	return nil
 }
 

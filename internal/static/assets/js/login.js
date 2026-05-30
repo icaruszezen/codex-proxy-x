@@ -1,5 +1,5 @@
 import { isCredentialError, requestCodexAuthURL, requestCodexExchange } from "./api.js";
-import { buildAlert, escapeHtml } from "./ui.js";
+import { buildAlert, copyToClipboard, escapeHtml } from "./ui.js";
 
 export function createCodexLoginFeature({
   els,
@@ -94,26 +94,6 @@ export function createCodexLoginFeature({
       renderGenerateState(buildAlert("error", "生成失败", escapeHtml(error?.message || "未知错误")));
     } finally {
       setGenerating(false);
-    }
-  }
-
-  async function copyToClipboard(text) {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return true;
-      }
-    } catch (error) {
-      // ignore, fallback below
-    }
-    try {
-      els.loginAuthUrl.select();
-      els.loginAuthUrl.setSelectionRange(0, text.length);
-      document.execCommand("copy");
-      els.loginAuthUrl.blur();
-      return true;
-    } catch (error) {
-      return false;
     }
   }
 

@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"time"
 
+	"codex-proxy/internal/apidebug"
 	"codex-proxy/internal/auth"
 	"codex-proxy/internal/thinking"
 	"codex-proxy/internal/translator"
+	"codex-proxy/internal/upstream"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -148,6 +150,7 @@ func (e *Executor) openResponsesBody(ctx context.Context, rc RetryConfig, reques
 	meta.BaseModel = bm
 	codexBody := translator.ConvertOpenAIRequestToCodex(meta.BaseModel, thBody, true, isImage)
 	meta.ConvertDur = time.Since(convertStart)
+	apidebug.TraceRequestTransform(ctx, meta.BaseModel, useProvider, codexBody)
 	sendStart := time.Now()
 
 	if useProvider {
@@ -155,16 +158,26 @@ func (e *Executor) openResponsesBody(ctx context.Context, rc RetryConfig, reques
 			meta.SendDur = time.Since(sendStart)
 			return nil, meta, ErrProviderUnavailable
 		}
+		cfg := e.providerService.Config()
+		endpoint, endpointErr := upstream.ResponsesEndpoint(cfg.BaseURL)
+		if endpointErr != nil {
+			meta.SendDur = time.Since(sendStart)
+			return nil, meta, endpointErr
+		}
+		apidebug.TraceProviderUpstreamRequest(ctx, endpoint, codexBody)
 		httpResp, serr := e.providerService.SendResponses(ctx, codexBody, true, model)
 		if serr != nil {
 			meta.SendDur = time.Since(sendStart)
+			apidebug.TraceProviderUpstreamError(ctx, endpoint, serr)
 			return nil, meta, serr
 		}
 		meta.SendDur = time.Since(sendStart)
 		bodyOut, perr := probeResponsesBody(httpResp, RetryConfig{}, nil, 0, 1, false)
 		if perr.retry || perr.err != nil {
+			apidebug.TraceProviderUpstreamResponse(ctx, httpResp.StatusCode, nil, fmt.Sprintf("probe failed: %v", perr.err))
 			return nil, meta, perr.err
 		}
+		apidebug.TraceProviderUpstreamResponse(ctx, httpResp.StatusCode, nil, "SSE stream opened")
 		meta.Attempts = 1
 		meta.ReverseTools = translator.BuildReverseToolNameMap(requestBody)
 		return bodyOut, meta, nil

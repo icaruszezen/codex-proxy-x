@@ -36,18 +36,30 @@ func (h *ProxyHandler) handleImageGenerations(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到 Images Generations 请求: model=%s upstream_model=%s output_format=%s", params.RequestModel, params.ExecutorModel, params.OutputFormat)
 
-	result, execErr := h.executeResponsesNonStreamWithFallback(ctx, requestBody, params.ExecutorModel)
+	traceSess, traceCtx := h.startAPITrace(ctx, params.ExecutorModel, false, body)
+
+	result, execErr := h.executeResponsesNonStreamWithFallback(traceCtx, requestBody, params.ExecutorModel)
 	if execErr != nil {
+		if traceSess != nil {
+			traceSess.finish(false, execErr)
+		}
 		handleExecutorError(ctx, execErr)
 		return
 	}
 
 	responseBody, err := convertCodexResponseToImageGenerationResponse(result, params.ResponseFormat)
 	if err != nil {
+		if traceSess != nil {
+			traceSess.finish(false, err)
+		}
 		sendError(ctx, fasthttp.StatusBadGateway, err.Error(), "bad_gateway")
 		return
 	}
 
+	if traceSess != nil {
+		traceSess.recordDownstreamResponse(responseBody)
+		traceSess.finish(true, nil)
+	}
 	RecordRequest()
 	ctx.Response.Header.Set("Content-Type", "application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)

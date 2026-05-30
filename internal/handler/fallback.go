@@ -29,6 +29,7 @@ func (h *ProxyHandler) executeChatNonStreamWithFallback(ctx context.Context, bod
 	if !h.executor.HasProviderFallback() {
 		return nil, err
 	}
+	recordFallbackToProvider(ctx, err)
 	result, providerErr := h.executor.ExecuteProviderNonStream(ctx, body, model)
 	if providerErr == nil {
 		return result, nil
@@ -48,6 +49,7 @@ func (h *ProxyHandler) executeResponsesNonStreamWithFallback(ctx context.Context
 	if !h.executor.HasProviderFallback() {
 		return nil, err
 	}
+	recordFallbackToProvider(ctx, err)
 	result, providerErr := h.executor.ExecuteProviderResponsesNonStream(ctx, body, model)
 	if providerErr == nil {
 		return result, nil
@@ -82,6 +84,7 @@ func (h *ProxyHandler) runCodexStreamWithFallback(ctx context.Context, body []by
 	if !h.executor.HasProviderFallback() {
 		return err
 	}
+	recordFallbackToProvider(ctx, err)
 	providerWriter := &fallbackCountingWriter{w: w}
 	providerErr := h.executor.RunProviderStream(ctx, body, model, providerWriter, flush, pump)
 	if providerErr == nil {

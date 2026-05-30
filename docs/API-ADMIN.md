@@ -443,6 +443,84 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/newapi/test/disable" \
 
 ---
 
+## API 调试（`/admin/api-debug/*`）
+
+用于排查推理类 API 在上游 Provider 回退链路中的问题。开启后，服务端在内存中环形保留**最近 20 条**推理请求追踪（进程重启后清空）；开关状态持久化到 `{auth-dir}/api-debug-config.json`。
+
+记录范围：
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`（含 compact）
+- `POST /v1/messages`
+- `POST /v1/images/generations`
+
+每条记录包含下游请求、Codex 主路径各次尝试、Provider 回退（如有）、下游响应等 step。敏感头（`Authorization`、`api-key` 等）会自动掩码；单 step body 超过 64KB 会截断。
+
+Admin UI 提供独立「API 调试」标签页：**仅点击「刷新记录」时拉取最新列表**，不会自动轮询。
+
+### `GET /admin/api-debug/config`
+
+```bash
+curl -sS "http://127.0.0.1:8080/admin/api-debug/config" \
+  -H "Authorization: Bearer sk-your-custom-key"
+```
+
+响应示例：
+
+```json
+{
+  "object": "api_debug_config",
+  "config": {
+    "enabled": false
+  }
+}
+```
+
+### `PUT /admin/api-debug/config`
+
+```bash
+curl -sS -X PUT "http://127.0.0.1:8080/admin/api-debug/config" \
+  -H "Authorization: Bearer sk-your-custom-key" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+```
+
+### `GET /admin/api-debug/traces`
+
+返回当前内存中的追踪记录（最多 20 条，最新在前）。
+
+```bash
+curl -sS "http://127.0.0.1:8080/admin/api-debug/traces" \
+  -H "Authorization: Bearer sk-your-custom-key"
+```
+
+响应示例：
+
+```json
+{
+  "object": "api_debug_traces",
+  "count": 1,
+  "traces": [
+    {
+      "id": "a1b2c3d4e5f67890",
+      "started_at": "2026-05-31T12:00:00Z",
+      "duration_ms": 1523,
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "model": "gpt-5",
+      "stream": true,
+      "success": true,
+      "route": "codex_then_provider",
+      "steps": []
+    }
+  ]
+}
+```
+
+`route` 取值：`codex`（仅主池）、`provider`（仅 Provider）、`codex_then_provider`（主池失败后回退）。
+
+---
+
 ## 其他管理接口摘要
 
 ### `POST /recover-auth`
@@ -464,4 +542,5 @@ curl -sS -X POST "http://127.0.0.1:8080/admin/newapi/test/disable" \
 - 导入接口会写入**完整 OAuth 凭据**，权限与修改号池等价；务必 **配置 `api-keys`**、限制来源 IP，或通过反向代理仅对内网开放 `/admin/`。  
 - qmsg 配置文件包含明文 KEY，默认保存为 `auth-dir/qmsg-config.json` 且文件权限为 `0600`；请保护 `auth-dir` 目录访问权限。
 - NewAPI 配置文件包含明文管理员令牌，默认保存为 `auth-dir/newapi-config.json` 且文件权限为 `0600`；请保护 `auth-dir` 目录访问权限。
+- 开启 API 调试后，内存中的追踪记录可能包含请求/响应正文片段；请勿在生产环境长期开启，并限制 Admin 接口访问。
 - 勿在日志、工单中粘贴真实 `refresh_token`、qmsg KEY 或 NewAPI 管理员令牌。

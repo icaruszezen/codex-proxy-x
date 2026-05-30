@@ -22,6 +22,7 @@
         <button id="qmsgViewBtn" class="secondary">qmsg 通知</button>
         <button id="newapiViewBtn" class="secondary">NewAPI 渠道</button>
         <button id="upstreamProviderViewBtn" class="secondary">上游提供商</button>
+        <button id="apiDebugViewBtn" class="secondary">API 调试</button>
         <button id="refreshBtn">刷新数据</button>
         <button id="quotaCheckBtn" class="secondary">查询额度</button>
         <button id="clearBtn" class="secondary">清空缓存</button>
@@ -535,6 +536,47 @@
             <button id="openSettingsFromUpstreamProviderBtn" class="ghost">设置接口</button>
           </div>
           <div id="upstreamProviderState" class="alert-stack"></div>
+        </div>
+      </section>
+
+      <section id="apiDebugView" class="view hidden">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>API 调试</h2>
+              <p class="panel-note">开启后自动记录最近 20 条推理类 API 请求（下游→Codex→Provider 全链路）。本页仅在点击「刷新记录」时更新列表，不会自动轮询。</p>
+            </div>
+            <div class="hero-actions">
+              <span id="apiDebugConfigStatus" class="pill">未加载</span>
+              <button id="apiDebugLoadBtn" class="ghost" type="button">重新加载</button>
+              <button id="backToStatsFromApiDebugBtn" class="ghost" type="button">返回统计</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel qmsg-form api-debug-form">
+          <div class="form-grid">
+            <label class="check-row">
+              <input id="apiDebugEnabled" type="checkbox" />
+              <span>开启 API 调试记录</span>
+            </label>
+          </div>
+          <div class="hero-actions">
+            <button id="apiDebugSaveBtn" type="button">保存开关</button>
+            <button id="apiDebugRefreshBtn" class="secondary" type="button">刷新记录</button>
+            <button id="openSettingsFromApiDebugBtn" class="ghost" type="button">设置接口</button>
+          </div>
+          <div id="apiDebugState" class="alert-stack"></div>
+        </div>
+
+        <div class="panel debug-traces-panel">
+          <div class="section-head compact-head">
+            <div>
+              <h3>最近 API 记录</h3>
+              <p id="apiDebugEmptyHint" class="panel-note">请先开启调试开关，然后发起推理请求并点击刷新记录。</p>
+            </div>
+          </div>
+          <div id="apiDebugTraceList" class="debug-trace-list"></div>
         </div>
       </section>
     </main>

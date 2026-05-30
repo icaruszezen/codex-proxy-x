@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"codex-proxy/internal/apidebug"
 	"codex-proxy/internal/auth"
 	"codex-proxy/internal/executor"
 	"codex-proxy/internal/notify"
@@ -82,6 +83,7 @@ type ProxyHandler struct {
 	qmsgService               *notify.Service
 	newapiService             *notify.NewAPIService
 	upstreamProviderService   *upstream.Service
+	apiDebug                  *apidebug.Store
 	quotaPrecheck             bool /* true：选号后 wham 预检；false：直发上游，401 换号+异步 OAuth */
 	indexHTML                 []byte
 	emptyRetryMax             int
@@ -119,7 +121,7 @@ type auth401RecoverTrack struct {
  * @param debugUpstreamStream - 是否 Info 打印上游 Codex SSE 原文（对应配置 debug-upstream-stream）
  * @returns *ProxyHandler - 代理处理器实例
  */
-func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, newapiService *notify.NewAPIService, upstreamProviderService *upstream.Service, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, indexHTML []byte) *ProxyHandler {
+func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, newapiService *notify.NewAPIService, upstreamProviderService *upstream.Service, apiDebugStore *apidebug.Store, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, indexHTML []byte) *ProxyHandler {
 	if maxRetry < 0 {
 		maxRetry = 0
 	}
@@ -141,6 +143,7 @@ func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []s
 		qmsgService:             qmsgService,
 		newapiService:           newapiService,
 		upstreamProviderService: upstreamProviderService,
+		apiDebug:                apiDebugStore,
 		quotaPrecheck:           quotaPrecheck,
 		indexHTML:               indexHTML,
 		emptyRetryMax:           emptyRetryMax,
@@ -236,6 +239,8 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	upstreamProviderConfigHandler := h.handleUpstreamProviderConfig
 	upstreamProviderModelsFetchHandler := h.handleUpstreamProviderModelsFetch
 	upstreamProviderTestHandler := h.handleUpstreamProviderTest
+	apiDebugConfigHandler := h.handleAPIDebugConfig
+	apiDebugTracesHandler := h.handleAPIDebugTraces
 	standbyStateHandler := h.handleStandbyState
 	standbyIngestHandler := h.handleStandbyAccountsIngest
 	standbyExportHandler := h.handleStandbyAccountsExport
@@ -255,6 +260,8 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 		upstreamProviderConfigHandler = h.authMiddleware(h.handleUpstreamProviderConfig)
 		upstreamProviderModelsFetchHandler = h.authMiddleware(h.handleUpstreamProviderModelsFetch)
 		upstreamProviderTestHandler = h.authMiddleware(h.handleUpstreamProviderTest)
+		apiDebugConfigHandler = h.authMiddleware(h.handleAPIDebugConfig)
+		apiDebugTracesHandler = h.authMiddleware(h.handleAPIDebugTraces)
 		standbyStateHandler = h.authMiddleware(h.handleStandbyState)
 		standbyIngestHandler = h.authMiddleware(h.handleStandbyAccountsIngest)
 		standbyExportHandler = h.authMiddleware(h.handleStandbyAccountsExport)
@@ -278,6 +285,9 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	r.PUT("/admin/upstream-provider/config", upstreamProviderConfigHandler)
 	r.POST("/admin/upstream-provider/models/fetch", upstreamProviderModelsFetchHandler)
 	r.POST("/admin/upstream-provider/test", upstreamProviderTestHandler)
+	r.GET("/admin/api-debug/config", apiDebugConfigHandler)
+	r.PUT("/admin/api-debug/config", apiDebugConfigHandler)
+	r.GET("/admin/api-debug/traces", apiDebugTracesHandler)
 	/* 备用账号池 */
 	r.GET("/admin/standby/state", standbyStateHandler)
 	r.POST("/admin/standby/accounts/ingest", standbyIngestHandler)
@@ -766,6 +776,8 @@ func (h *ProxyHandler) handleChatCompletions(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到请求: model=%s, stream=%v", model, stream)
 
+	traceSess, traceCtx := h.startAPITrace(ctx, model, stream, body)
+
 	if stream {
 		/* 头与状态在 StreamWriter 外发送；Open+Pump 在 Writer 内完成，上游断连等在响应体尚无字节时可内部多轮全量重连，最后再向客户端写 SSE 错误 */
 		ctx.Response.Header.Set("Content-Type", "text/event-stream")
@@ -778,22 +790,44 @@ func (h *ProxyHandler) handleChatCompletions(ctx *fasthttp.RequestCtx) {
 			_ = w.Flush()
 			flush := func() { _ = w.Flush() }
 			sw := newStreamBufWriter(w)
-			execErr := h.runChatStreamWithFallback(context.Background(), body, model, sw, flush)
+			out := io.Writer(sw)
+			var traceWriter *apidebug.TraceWriter
+			if traceSess != nil {
+				traceWriter = apidebug.NewTraceWriter(sw, traceSess.collector)
+				out = traceWriter
+			}
+			execErr := h.runChatStreamWithFallback(traceCtx, body, model, out, flush)
+			if traceWriter != nil {
+				traceWriter.RecordDownstreamResponse()
+			}
 			if execErr != nil {
 				log.Errorf("chat stream: %v", execErr)
+				if traceSess != nil {
+					traceSess.finish(false, execErr)
+				}
 				msg, typ := chatStreamPumpErrorMeta(execErr)
 				writeOpenAIChatCompletionSSEError(w, msg, typ, true)
 				return
+			}
+			if traceSess != nil {
+				traceSess.finish(true, nil)
 			}
 			RecordRequest()
 		})
 		return
 	}
 
-	result, execErr := h.executeChatNonStreamWithFallback(ctx, body, model)
+	result, execErr := h.executeChatNonStreamWithFallback(traceCtx, body, model)
 	if execErr != nil {
+		if traceSess != nil {
+			traceSess.finish(false, execErr)
+		}
 		handleExecutorError(ctx, execErr)
 		return
+	}
+	if traceSess != nil {
+		traceSess.recordDownstreamResponse(result)
+		traceSess.finish(true, nil)
 	}
 	RecordRequest()
 	ctx.Response.Header.Set("Content-Type", "application/json")
@@ -1218,6 +1252,8 @@ func (h *ProxyHandler) handleResponses(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到 Responses 请求: model=%s, stream=%v", model, stream)
 
+	traceSess, traceCtx := h.startAPITrace(ctx, model, stream, body)
+
 	if stream {
 		/* 头与状态在 StreamWriter 外发送；Open+Pump 在 Writer 内完成，connection closed 等在体尚无字节时可内部多轮全量重连 */
 		ctx.Response.Header.Set("Content-Type", "text/event-stream")
@@ -1230,22 +1266,44 @@ func (h *ProxyHandler) handleResponses(ctx *fasthttp.RequestCtx) {
 			_ = w.Flush()
 			flush := func() { _ = w.Flush() }
 			sw := newStreamBufWriter(w)
-			execErr := h.runResponsesStreamWithFallback(context.Background(), body, model, sw, flush)
+			out := io.Writer(sw)
+			var traceWriter *apidebug.TraceWriter
+			if traceSess != nil {
+				traceWriter = apidebug.NewTraceWriter(sw, traceSess.collector)
+				out = traceWriter
+			}
+			execErr := h.runResponsesStreamWithFallback(traceCtx, body, model, out, flush)
+			if traceWriter != nil {
+				traceWriter.RecordDownstreamResponse()
+			}
 			if execErr != nil {
 				log.Errorf("responses stream: %v", execErr)
+				if traceSess != nil {
+					traceSess.finish(false, execErr)
+				}
 				msg, typ := chatStreamPumpErrorMeta(execErr)
 				writeOpenAIChatCompletionSSEError(w, msg, typ, true)
 				return
+			}
+			if traceSess != nil {
+				traceSess.finish(true, nil)
 			}
 			RecordRequest()
 		})
 		return
 	}
 
-	result, execErr := h.executeResponsesNonStreamWithFallback(ctx, body, model)
+	result, execErr := h.executeResponsesNonStreamWithFallback(traceCtx, body, model)
 	if execErr != nil {
+		if traceSess != nil {
+			traceSess.finish(false, execErr)
+		}
 		handleExecutorError(ctx, execErr)
 		return
+	}
+	if traceSess != nil {
+		traceSess.recordDownstreamResponse(result)
+		traceSess.finish(true, nil)
 	}
 	RecordRequest()
 	ctx.Response.Header.Set("Content-Type", "application/json")
@@ -1540,11 +1598,15 @@ func (h *ProxyHandler) handleResponsesCompact(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到 Responses Compact 请求: model=%s, stream=%v", model, stream)
 
+	traceSess, traceCtx := h.startAPITrace(ctx, model, stream, body)
 	rc := h.buildRetryConfig()
 
 	if stream {
-		compact, openErr := h.executor.OpenCodexCompactStream(ctx, rc, body, model)
+		compact, openErr := h.executor.OpenCodexCompactStream(traceCtx, rc, body, model)
 		if openErr != nil {
+			if traceSess != nil {
+				traceSess.finish(false, openErr)
+			}
 			handleExecutorError(ctx, openErr)
 			return
 		}
@@ -1556,20 +1618,46 @@ func (h *ProxyHandler) handleResponsesCompact(ctx *fasthttp.RequestCtx) {
 		ctx.SetStatusCode(fasthttp.StatusOK)
 		ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
 			flush := func() { _ = w.Flush() }
-			if execErr := compact.PumpBody(newStreamBufWriter(w), flush); execErr != nil {
+			sw := newStreamBufWriter(w)
+			out := io.Writer(sw)
+			var traceWriter *apidebug.TraceWriter
+			if traceSess != nil {
+				traceWriter = apidebug.NewTraceWriter(sw, traceSess.collector)
+				out = traceWriter
+			}
+			if execErr := compact.PumpBody(out, flush); execErr != nil {
 				log.Errorf("compact stream pump: %v", execErr)
+				if traceWriter != nil {
+					traceWriter.RecordDownstreamResponse()
+				}
+				if traceSess != nil {
+					traceSess.finish(false, execErr)
+				}
 				return
 			}
+			if traceWriter != nil {
+				traceWriter.RecordDownstreamResponse()
+			}
 			compact.Account.RecordSuccess()
+			if traceSess != nil {
+				traceSess.finish(true, nil)
+			}
 			RecordRequest()
 		})
 		return
 	}
 
-	result, execErr := h.executor.ExecuteResponsesCompactNonStream(ctx, rc, body, model)
+	result, execErr := h.executor.ExecuteResponsesCompactNonStream(traceCtx, rc, body, model)
 	if execErr != nil {
+		if traceSess != nil {
+			traceSess.finish(false, execErr)
+		}
 		handleExecutorError(ctx, execErr)
 		return
+	}
+	if traceSess != nil {
+		traceSess.recordDownstreamResponse(result)
+		traceSess.finish(true, nil)
 	}
 	RecordRequest()
 	ctx.Response.Header.Set("Content-Type", "application/json")

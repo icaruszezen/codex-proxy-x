@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"codex-proxy/internal/apidebug"
 	"codex-proxy/internal/auth"
 	"codex-proxy/internal/netutil"
 	"codex-proxy/internal/thinking"
@@ -412,6 +413,7 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 				return nil, fmt.Errorf("%w: %w", errCodexBuildRequest, err)
 			}
 			applyCodexHeaders(httpReq, account, stream)
+			apidebug.TraceCodexUpstreamRequest(ctx, attemptOneBased, maxLabel, account.GetEmail(), apiURL, httpReq.Header, codexBody)
 			buildDur := time.Since(buildStart)
 			dialTarget := effectiveDialTarget(httpReq.URL, e.resolveAddr)
 			log.Debugf("upstream request model=%s stream=%v account=%s attempt=%d/%d method=%s url=%s dial_target=%s", model, stream, account.GetEmail(), attemptOneBased, maxLabel, httpReq.Method, httpReq.URL.String(), dialTarget)
@@ -422,6 +424,7 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 			if err != nil {
 				account.RecordFailure()
 				netErr := fmt.Errorf("请求发送失败: %w", err)
+				apidebug.TraceCodexUpstreamNetError(ctx, attemptOneBased, account.GetEmail(), apiURL, err)
 				log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=ERR err=%v", model, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), err)
 				if rc.OnAfterUpstreamErrFn != nil {
 					rc.OnAfterUpstreamErrFn(account, 0)
@@ -430,6 +433,7 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 			}
 
 			if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
+				apidebug.TraceCodexUpstreamResponse(ctx, attemptOneBased, account.GetEmail(), httpResp.StatusCode, nil, apidebug.PhaseResponse)
 				log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=%d", model, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), httpResp.StatusCode)
 				log.Debugf("send attempt success status=%d account=%s elapsed=%v", httpResp.StatusCode, account.GetEmail(), time.Since(startAttempt).Round(time.Millisecond))
 				return httpResp, nil
@@ -450,6 +454,7 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 			}
 
 			lastStatus = &StatusError{Code: httpResp.StatusCode, Body: errBody}
+			apidebug.TraceCodexUpstreamResponse(ctx, attemptOneBased, account.GetEmail(), httpResp.StatusCode, errBody, apidebug.PhaseError)
 			log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=%d", model, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), httpResp.StatusCode)
 
 			if httpResp.StatusCode == 401 && rc.On401Fn != nil {

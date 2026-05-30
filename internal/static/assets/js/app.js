@@ -1,3 +1,4 @@
+import { createApiDebugFeature } from "./api-debug.js";
 import { createImportsFeature } from "./imports.js";
 import { createCodexLoginFeature } from "./login.js";
 import { createNewapiFeature } from "./newapi.js";
@@ -16,6 +17,7 @@ const VIEW_QMSG = "qmsg";
 const VIEW_STANDBY = "standby";
 const VIEW_NEWAPI = "newapi";
 const VIEW_UPSTREAM_PROVIDER = "upstream-provider";
+const VIEW_API_DEBUG = "api-debug";
 
 const els = {
   pageSubtitle: document.getElementById("pageSubtitle"),
@@ -27,6 +29,7 @@ const els = {
   qmsgViewBtn: document.getElementById("qmsgViewBtn"),
   newapiViewBtn: document.getElementById("newapiViewBtn"),
   upstreamProviderViewBtn: document.getElementById("upstreamProviderViewBtn"),
+  apiDebugViewBtn: document.getElementById("apiDebugViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   quotaCheckBtn: document.getElementById("quotaCheckBtn"),
   clearBtn: document.getElementById("clearBtn"),
@@ -141,6 +144,17 @@ const els = {
   upstreamProviderFetchModelsBtn: document.getElementById("upstreamProviderFetchModelsBtn"),
   upstreamProviderTestBtn: document.getElementById("upstreamProviderTestBtn"),
   upstreamProviderState: document.getElementById("upstreamProviderState"),
+  apiDebugView: document.getElementById("apiDebugView"),
+  apiDebugConfigStatus: document.getElementById("apiDebugConfigStatus"),
+  apiDebugLoadBtn: document.getElementById("apiDebugLoadBtn"),
+  apiDebugEnabled: document.getElementById("apiDebugEnabled"),
+  apiDebugSaveBtn: document.getElementById("apiDebugSaveBtn"),
+  apiDebugRefreshBtn: document.getElementById("apiDebugRefreshBtn"),
+  apiDebugState: document.getElementById("apiDebugState"),
+  apiDebugTraceList: document.getElementById("apiDebugTraceList"),
+  apiDebugEmptyHint: document.getElementById("apiDebugEmptyHint"),
+  backToStatsFromApiDebugBtn: document.getElementById("backToStatsFromApiDebugBtn"),
+  openSettingsFromApiDebugBtn: document.getElementById("openSettingsFromApiDebugBtn"),
   standbyStatusBanner: document.getElementById("standbyStatusBanner"),
   standbySummary: document.getElementById("standbySummary"),
   standbyActionState: document.getElementById("standbyActionState"),
@@ -242,6 +256,7 @@ function getViewFromHash() {
   if (hash === "#standby") return VIEW_STANDBY;
   if (hash === "#newapi") return VIEW_NEWAPI;
   if (hash === "#upstream-provider" || hash === "#provider") return VIEW_UPSTREAM_PROVIDER;
+  if (hash === "#api-debug") return VIEW_API_DEBUG;
   return VIEW_STATS;
 }
 
@@ -253,7 +268,8 @@ function updateViewState() {
   const isStandby = activeView === VIEW_STANDBY;
   const isNewapi = activeView === VIEW_NEWAPI;
   const isUpstreamProvider = activeView === VIEW_UPSTREAM_PROVIDER;
-  const isStats = !isEvents && !isImport && !isLogin && !isQmsg && !isStandby && !isNewapi && !isUpstreamProvider;
+  const isApiDebug = activeView === VIEW_API_DEBUG;
+  const isStats = !isEvents && !isImport && !isLogin && !isQmsg && !isStandby && !isNewapi && !isUpstreamProvider && !isApiDebug;
   els.pageSubtitle.textContent = isEvents
     ? "查看最近自动删除或自动停用的账号事件"
     : isImport
@@ -268,6 +284,8 @@ function updateViewState() {
               ? "配置备用池切换时联动的 NewAPI 渠道状态"
               : isUpstreamProvider
                 ? "配置主池无账号时优先切换的上游 API 提供商"
+                : isApiDebug
+                  ? "查看最近 20 条推理 API 请求调试记录（手动刷新）"
                 : "数据只在点击刷新时更新";
   els.statsView.classList.toggle("hidden", !isStats);
   els.eventsView.classList.toggle("hidden", !isEvents);
@@ -277,6 +295,7 @@ function updateViewState() {
   if (els.standbyView) els.standbyView.classList.toggle("hidden", !isStandby);
   if (els.newapiView) els.newapiView.classList.toggle("hidden", !isNewapi);
   if (els.upstreamProviderView) els.upstreamProviderView.classList.toggle("hidden", !isUpstreamProvider);
+  if (els.apiDebugView) els.apiDebugView.classList.toggle("hidden", !isApiDebug);
   els.statsViewBtn.classList.toggle("active", isStats);
   els.eventsViewBtn.classList.toggle("active", isEvents);
   els.importViewBtn.classList.toggle("active", isImport);
@@ -285,6 +304,7 @@ function updateViewState() {
   if (els.standbyViewBtn) els.standbyViewBtn.classList.toggle("active", isStandby);
   if (els.newapiViewBtn) els.newapiViewBtn.classList.toggle("active", isNewapi);
   if (els.upstreamProviderViewBtn) els.upstreamProviderViewBtn.classList.toggle("active", isUpstreamProvider);
+  if (els.apiDebugViewBtn) els.apiDebugViewBtn.classList.toggle("active", isApiDebug);
   els.refreshBtn.classList.toggle("hidden", !isStats);
   els.clearBtn.classList.toggle("hidden", !isStats);
   els.recoverAllBtn.classList.toggle("hidden", !isStats);
@@ -299,6 +319,7 @@ function setView(view, options = {}) {
   else if (view === VIEW_STANDBY) activeView = VIEW_STANDBY;
   else if (view === VIEW_NEWAPI) activeView = VIEW_NEWAPI;
   else if (view === VIEW_UPSTREAM_PROVIDER) activeView = VIEW_UPSTREAM_PROVIDER;
+  else if (view === VIEW_API_DEBUG) activeView = VIEW_API_DEBUG;
   else activeView = VIEW_STATS;
   updateViewState();
   if (updateHash) {
@@ -316,6 +337,8 @@ function setView(view, options = {}) {
                 ? "#newapi"
                 : activeView === VIEW_UPSTREAM_PROVIDER
                   ? "#upstream-provider"
+                  : activeView === VIEW_API_DEBUG
+                    ? "#api-debug"
                 : "#stats";
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash;
@@ -437,6 +460,22 @@ const upstreamProviderFeature = createUpstreamProviderFeature({
   }
 });
 
+const apiDebugFeature = createApiDebugFeature({
+  els,
+  getCredentials,
+  onMissingCredentials: () => {
+    setLoginError("");
+    showLogin(true);
+  },
+  onCredentialError: message => {
+    setLoginError(message);
+    showLogin(true);
+  },
+  onLoadingChange: isLoading => {
+    setLoading(els.loadingOverlay, isLoading);
+  }
+});
+
 function bindGlobalEvents() {
   els.statsViewBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
@@ -464,6 +503,12 @@ function bindGlobalEvents() {
     els.upstreamProviderViewBtn.addEventListener("click", () => {
       setView(VIEW_UPSTREAM_PROVIDER);
       upstreamProviderFeature.ensureLoaded().catch(() => {});
+    });
+  }
+  if (els.apiDebugViewBtn) {
+    els.apiDebugViewBtn.addEventListener("click", () => {
+      setView(VIEW_API_DEBUG);
+      apiDebugFeature.ensureLoaded().catch(() => {});
     });
   }
   if (els.standbyViewBtn) {
@@ -499,6 +544,11 @@ function bindGlobalEvents() {
       setView(VIEW_STATS);
     });
   }
+  if (els.backToStatsFromApiDebugBtn) {
+    els.backToStatsFromApiDebugBtn.addEventListener("click", () => {
+      setView(VIEW_STATS);
+    });
+  }
   els.openSettingsFromLoginBtn.addEventListener("click", () => {
     setLoginError("");
     showLogin(true);
@@ -530,6 +580,12 @@ function bindGlobalEvents() {
       showLogin(true);
     });
   }
+  if (els.openSettingsFromApiDebugBtn) {
+    els.openSettingsFromApiDebugBtn.addEventListener("click", () => {
+      setLoginError("");
+      showLogin(true);
+    });
+  }
   window.addEventListener("hashchange", () => {
     setView(getViewFromHash(), { updateHash: false });
     if (activeView === VIEW_QMSG) {
@@ -543,6 +599,9 @@ function bindGlobalEvents() {
     }
     if (activeView === VIEW_UPSTREAM_PROVIDER) {
       upstreamProviderFeature.ensureLoaded().catch(() => {});
+    }
+    if (activeView === VIEW_API_DEBUG) {
+      apiDebugFeature.ensureLoaded().catch(() => {});
     }
   });
   els.saveCredentialsBtn.addEventListener("click", async () => {
@@ -598,6 +657,7 @@ function init() {
   newapiFeature.init();
   standbyFeature.init();
   upstreamProviderFeature.init();
+  apiDebugFeature.init();
   bindGlobalEvents();
   setView(getViewFromHash(), { updateHash: false });
   if (activeView === VIEW_QMSG) {
@@ -611,6 +671,9 @@ function init() {
   }
   if (activeView === VIEW_UPSTREAM_PROVIDER) {
     upstreamProviderFeature.ensureLoaded().catch(() => {});
+  }
+  if (activeView === VIEW_API_DEBUG) {
+    apiDebugFeature.ensureLoaded().catch(() => {});
   }
 }
 
