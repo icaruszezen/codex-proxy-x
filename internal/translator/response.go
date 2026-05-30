@@ -18,6 +18,185 @@ import (
 
 var dataPrefix = []byte("data:")
 
+type chatUsageDetails struct {
+	PromptTokens        int64
+	CompletionTokens    int64
+	TotalTokens         int64
+	CachedTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+	ReasoningTokens     int64
+
+	HasPrompt        bool
+	HasCompletion    bool
+	HasTotal         bool
+	HasCached        bool
+	HasCacheCreation bool
+	HasCacheRead     bool
+	HasReasoning     bool
+}
+
+func firstUsageInt(usage gjson.Result, paths ...string) (int64, bool) {
+	for _, path := range paths {
+		if v := usage.Get(path); v.Exists() {
+			return v.Int(), true
+		}
+	}
+	return 0, false
+}
+
+func normalizeChatUsage(usage gjson.Result) chatUsageDetails {
+	d := chatUsageDetails{}
+	if v, ok := firstUsageInt(usage, "input_tokens", "prompt_tokens"); ok {
+		d.PromptTokens = v
+		d.HasPrompt = true
+	}
+	if v, ok := firstUsageInt(usage, "output_tokens", "completion_tokens"); ok {
+		d.CompletionTokens = v
+		d.HasCompletion = true
+	}
+	if v, ok := firstUsageInt(usage, "total_tokens"); ok {
+		d.TotalTokens = v
+		d.HasTotal = true
+	}
+	if v, ok := firstUsageInt(usage,
+		"cache_creation_input_tokens",
+		"input_tokens_details.cache_creation_tokens",
+		"prompt_tokens_details.cache_creation_tokens",
+		"cache_creation.input_tokens",
+		"prompt_cache_miss_tokens",
+	); ok {
+		d.CacheCreationTokens = v
+		d.HasCacheCreation = true
+	}
+	if v, ok := firstUsageInt(usage,
+		"cache_read_input_tokens",
+		"input_tokens_details.cache_read_tokens",
+		"prompt_tokens_details.cache_read_tokens",
+		"cache_read.input_tokens",
+		"input_cached_tokens",
+		"prompt_cache_hit_tokens",
+	); ok {
+		d.CacheReadTokens = v
+		d.HasCacheRead = true
+	}
+	if v, ok := firstUsageInt(usage,
+		"input_tokens_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+		"input_cached_tokens",
+		"cached_tokens",
+		"cache_read_input_tokens",
+		"prompt_cache_hit_tokens",
+	); ok {
+		d.CachedTokens = v
+		d.HasCached = true
+	} else if d.HasCacheRead {
+		d.CachedTokens = d.CacheReadTokens
+		d.HasCached = true
+	}
+	if v, ok := firstUsageInt(usage, "output_tokens_details.reasoning_tokens", "completion_tokens_details.reasoning_tokens"); ok {
+		d.ReasoningTokens = v
+		d.HasReasoning = true
+	}
+	return d
+}
+
+func (d chatUsageDetails) hasAny() bool {
+	return d.HasPrompt || d.HasCompletion || d.HasTotal || d.HasCached || d.HasCacheCreation || d.HasCacheRead || d.HasReasoning
+}
+
+func (d chatUsageDetails) withComputedTotal() chatUsageDetails {
+	if !d.HasTotal && (d.HasPrompt || d.HasCompletion) {
+		d.TotalTokens = d.PromptTokens + d.CompletionTokens
+		d.HasTotal = true
+	}
+	return d
+}
+
+func setChatUsage(tpl string, d chatUsageDetails) string {
+	d = d.withComputedTotal()
+	if d.HasPrompt {
+		tpl, _ = sjson.Set(tpl, "usage.prompt_tokens", d.PromptTokens)
+	}
+	if d.HasCompletion {
+		tpl, _ = sjson.Set(tpl, "usage.completion_tokens", d.CompletionTokens)
+	}
+	if d.HasTotal {
+		tpl, _ = sjson.Set(tpl, "usage.total_tokens", d.TotalTokens)
+	}
+	if d.HasCached {
+		tpl, _ = sjson.Set(tpl, "usage.prompt_tokens_details.cached_tokens", d.CachedTokens)
+	}
+	if d.HasCacheCreation {
+		tpl, _ = sjson.Set(tpl, "usage.prompt_tokens_details.cache_creation_tokens", d.CacheCreationTokens)
+		tpl, _ = sjson.Set(tpl, "usage.cache_creation_input_tokens", d.CacheCreationTokens)
+	}
+	if d.HasCacheRead {
+		tpl, _ = sjson.Set(tpl, "usage.prompt_tokens_details.cache_read_tokens", d.CacheReadTokens)
+		tpl, _ = sjson.Set(tpl, "usage.cache_read_input_tokens", d.CacheReadTokens)
+	}
+	if d.HasReasoning {
+		tpl, _ = sjson.Set(tpl, "usage.completion_tokens_details.reasoning_tokens", d.ReasoningTokens)
+	}
+	return tpl
+}
+
+func (s *StreamState) setUsage(d chatUsageDetails) {
+	if s == nil {
+		return
+	}
+	if d.HasPrompt {
+		s.UsageInput = d.PromptTokens
+		s.HasUsageInput = true
+	}
+	if d.HasCompletion {
+		s.UsageOutput = d.CompletionTokens
+		s.HasUsageOutput = true
+	}
+	if d.HasTotal {
+		s.UsageTotal = d.TotalTokens
+		s.HasUsageTotal = true
+	}
+	if d.HasCached {
+		s.UsageCached = d.CachedTokens
+		s.HasUsageCached = true
+	}
+	if d.HasCacheCreation {
+		s.UsageCacheCreation = d.CacheCreationTokens
+		s.HasUsageCacheCreation = true
+	}
+	if d.HasCacheRead {
+		s.UsageCacheRead = d.CacheReadTokens
+		s.HasUsageCacheRead = true
+	}
+	if d.HasReasoning {
+		s.UsageReasoning = d.ReasoningTokens
+		s.HasUsageReasoning = true
+	}
+}
+
+func (s *StreamState) usageDetails() chatUsageDetails {
+	if s == nil {
+		return chatUsageDetails{}
+	}
+	return chatUsageDetails{
+		PromptTokens:        s.UsageInput,
+		CompletionTokens:    s.UsageOutput,
+		TotalTokens:         s.UsageTotal,
+		CachedTokens:        s.UsageCached,
+		CacheCreationTokens: s.UsageCacheCreation,
+		CacheReadTokens:     s.UsageCacheRead,
+		ReasoningTokens:     s.UsageReasoning,
+		HasPrompt:           s.HasUsageInput,
+		HasCompletion:       s.HasUsageOutput,
+		HasTotal:            s.HasUsageTotal,
+		HasCached:           s.HasUsageCached,
+		HasCacheCreation:    s.HasUsageCacheCreation,
+		HasCacheRead:        s.HasUsageCacheRead,
+		HasReasoning:        s.HasUsageReasoning,
+	}
+}
+
 /**
  * StreamState 流式响应转换的状态对象
  * 在多次调用之间维护上下文（如 response ID、函数调用索引等）
@@ -49,6 +228,17 @@ type StreamState struct {
 	UsageInput               int64
 	UsageOutput              int64
 	UsageTotal               int64
+	UsageCached              int64
+	UsageCacheCreation       int64
+	UsageCacheRead           int64
+	UsageReasoning           int64
+	HasUsageInput            bool
+	HasUsageOutput           bool
+	HasUsageTotal            bool
+	HasUsageCached           bool
+	HasUsageCacheCreation    bool
+	HasUsageCacheRead        bool
+	HasUsageReasoning        bool
 	reasoningDeltaByItem     map[string]string
 	hasReasoningSummaryDelta bool
 
@@ -274,25 +464,10 @@ func ConvertStreamChunk(_ context.Context, rawLine []byte, state *StreamState, r
 
 		/* usage 只在 response.completed 事件中存在，提取并存入 state */
 		if usage := root.Get("response.usage"); usage.Exists() {
-			state.UsageInput = usage.Get("input_tokens").Int()
-			state.UsageOutput = usage.Get("output_tokens").Int()
-			state.UsageTotal = usage.Get("total_tokens").Int()
+			details := normalizeChatUsage(usage)
+			state.setUsage(details)
 			if !usageFinalSeparateChunk {
-				if v := usage.Get("output_tokens"); v.Exists() {
-					tpl, _ = sjson.Set(tpl, "usage.completion_tokens", v.Int())
-				}
-				if v := usage.Get("total_tokens"); v.Exists() {
-					tpl, _ = sjson.Set(tpl, "usage.total_tokens", v.Int())
-				}
-				if v := usage.Get("input_tokens"); v.Exists() {
-					tpl, _ = sjson.Set(tpl, "usage.prompt_tokens", v.Int())
-				}
-				if v := usage.Get("input_tokens_details.cached_tokens"); v.Exists() {
-					tpl, _ = sjson.Set(tpl, "usage.prompt_tokens_details.cached_tokens", v.Int())
-				}
-				if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
-					tpl, _ = sjson.Set(tpl, "usage.completion_tokens_details.reasoning_tokens", v.Int())
-				}
+				tpl = setChatUsage(tpl, details)
 			}
 		}
 
@@ -426,16 +601,7 @@ func BuildChatCompletionStreamUsageOnlyChunk(state *StreamState) string {
 	chunk, _ = sjson.Set(chunk, "id", state.ResponseID)
 	chunk, _ = sjson.Set(chunk, "created", state.CreatedAt)
 	chunk, _ = sjson.Set(chunk, "model", state.Model)
-	prompt := state.UsageInput
-	completion := state.UsageOutput
-	total := state.UsageTotal
-	if total <= 0 && (prompt > 0 || completion > 0) {
-		total = prompt + completion
-	}
-	chunk, _ = sjson.Set(chunk, "usage.prompt_tokens", prompt)
-	chunk, _ = sjson.Set(chunk, "usage.completion_tokens", completion)
-	chunk, _ = sjson.Set(chunk, "usage.total_tokens", total)
-	return chunk
+	return setChatUsage(chunk, state.usageDetails())
 }
 
 /**
@@ -469,7 +635,7 @@ func ConvertStreamSSEToNonStreamResponse(data []byte, model string, reverseToolM
 
 	finishReason := ""
 	usageExists := false
-	var usageInput, usageOutput, usageTotal int64
+	usageDetails := chatUsageDetails{}
 	for _, rawLine := range bytes.Split(data, []byte("\n")) {
 		line := bytes.TrimSpace(rawLine)
 		if len(line) == 0 || bytes.Equal(line, []byte("data: [DONE]")) {
@@ -512,18 +678,14 @@ func ConvertStreamSSEToNonStreamResponse(data []byte, model string, reverseToolM
 			}
 			if usage := root.Get("usage"); usage.Exists() {
 				usageExists = true
-				usageInput = usage.Get("prompt_tokens").Int()
-				usageOutput = usage.Get("completion_tokens").Int()
-				usageTotal = usage.Get("total_tokens").Int()
+				usageDetails = normalizeChatUsage(usage)
 			}
 		}
 	}
 
-	if state.UsageInput > 0 || state.UsageOutput > 0 || state.UsageTotal > 0 {
+	if state.usageDetails().hasAny() {
 		usageExists = true
-		usageInput = state.UsageInput
-		usageOutput = state.UsageOutput
-		usageTotal = state.UsageTotal
+		usageDetails = state.usageDetails()
 	}
 
 	hasOutput := contentBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(toolOrder) > 0
@@ -577,12 +739,7 @@ func ConvertStreamSSEToNonStreamResponse(data []byte, model string, reverseToolM
 	}
 	tpl, _ = sjson.Set(tpl, "choices.0.finish_reason", finishReason)
 	if usageExists {
-		if usageTotal <= 0 && (usageInput > 0 || usageOutput > 0) {
-			usageTotal = usageInput + usageOutput
-		}
-		tpl, _ = sjson.Set(tpl, "usage.prompt_tokens", usageInput)
-		tpl, _ = sjson.Set(tpl, "usage.completion_tokens", usageOutput)
-		tpl, _ = sjson.Set(tpl, "usage.total_tokens", usageTotal)
+		tpl = setChatUsage(tpl, usageDetails)
 	}
 	return tpl, true
 }
@@ -617,22 +774,7 @@ func ConvertNonStreamResponse(rawJSON []byte, reverseToolMap map[string]string) 
 
 	/* usage */
 	if usage := resp.Get("usage"); usage.Exists() {
-		if v := usage.Get("output_tokens"); v.Exists() {
-			tpl, _ = sjson.Set(tpl, "usage.completion_tokens", v.Int())
-		}
-		if v := usage.Get("total_tokens"); v.Exists() {
-			tpl, _ = sjson.Set(tpl, "usage.total_tokens", v.Int())
-		}
-		if v := usage.Get("input_tokens"); v.Exists() {
-			tpl, _ = sjson.Set(tpl, "usage.prompt_tokens", v.Int())
-		}
-		/* 透传 cached_tokens 和 reasoning_tokens 细分信息（issue #391） */
-		if v := usage.Get("input_tokens_details.cached_tokens"); v.Exists() {
-			tpl, _ = sjson.Set(tpl, "usage.prompt_tokens_details.cached_tokens", v.Int())
-		}
-		if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
-			tpl, _ = sjson.Set(tpl, "usage.completion_tokens_details.reasoning_tokens", v.Int())
-		}
+		tpl = setChatUsage(tpl, normalizeChatUsage(usage))
 	}
 
 	/* 处理 output 数组；先收集顶层 reasoning 相关字段（部分上游放在 response 下） */
