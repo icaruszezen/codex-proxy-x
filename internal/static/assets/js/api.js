@@ -537,6 +537,76 @@ async function testNewapiChannel(cred, endpoint, signal) {
   return await res.json();
 }
 
+/* ========== 上游 Provider ========== */
+
+export async function requestUpstreamProviderConfig(cred, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/upstream-provider/config"), {
+    method: "GET",
+    headers: buildHeaders(cred),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return data?.config || {};
+}
+
+export async function saveUpstreamProviderConfig(cred, config, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = buildUpstreamProviderConfigBody(config);
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/upstream-provider/config"), {
+    method: "PUT",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return data?.config || {};
+}
+
+export async function fetchUpstreamProviderModels(cred, config, signal) {
+  return postUpstreamProviderAction(cred, "/admin/upstream-provider/models/fetch", config, signal);
+}
+
+export async function testUpstreamProvider(cred, config, signal) {
+  return postUpstreamProviderAction(cred, "/admin/upstream-provider/test", config, signal);
+}
+
+async function postUpstreamProviderAction(cred, endpoint, config, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, endpoint), {
+    method: "POST",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify(buildUpstreamProviderConfigBody(config)),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  return await res.json();
+}
+
+function buildUpstreamProviderConfigBody(config = {}) {
+  return {
+    auto_switch: Boolean(config.autoSwitch ?? config.auto_switch),
+    base_url: String(config.baseUrl ?? config.base_url ?? "").trim(),
+    api_key: String(config.apiKey ?? config.api_key ?? "").trim(),
+    models: Array.isArray(config.models) ? config.models.map(item => String(item || "").trim()).filter(Boolean) : [],
+    timeout_sec: Number(config.timeoutSec ?? config.timeout_sec ?? 15) || 15
+  };
+}
+
 /* ========== 备用账号池 ========== */
 
 export async function requestStandbyState(cred, options = {}, signal) {

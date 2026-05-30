@@ -26,6 +26,7 @@ import (
 	"codex-proxy/internal/notify"
 	"codex-proxy/internal/standby"
 	"codex-proxy/internal/static"
+	"codex-proxy/internal/upstream"
 
 	"github.com/fasthttp/router"
 	log "github.com/sirupsen/logrus"
@@ -216,12 +217,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化 NewAPI 配置失败: %v", err)
 	}
+	upstreamProviderService, err := upstream.NewService(upstream.DefaultConfigPath(cfg.AuthDir), cfg.ProxyURL)
+	if err != nil {
+		log.Fatalf("初始化上游提供商配置失败: %v", err)
+	}
+	upstreamProviderService.SetQmsgService(qmsgService)
 	manager.SetAccountEventNotifier(qmsgService)
 	if qmsgService.PublicConfig(false).Configured {
 		log.Infof("qmsg 通知配置已加载")
 	}
 	if newapiService.PublicConfig().Configured {
 		log.Infof("NewAPI 渠道配置已加载")
+	}
+	if upstreamProviderService.PublicConfig().Configured {
+		log.Infof("上游 API 提供商配置已加载")
 	}
 	quotaChecker := auth.NewQuotaChecker(cfg.BaseURL, cfg.ProxyURL, cfg.QuotaCheckConcurrency, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, time.Duration(cfg.QuotaCheckCacheTTLSec)*time.Second)
 	manager.SetPostRefreshQuotaChecker(quotaChecker)
@@ -368,6 +377,7 @@ func main() {
 		ResponseHeaderTimeoutSec: cfg.UpstreamResponseHeaderTimeoutSec,
 	})
 	exec.SetDropPartialImage(cfg.ResponsesStreamDropPartialImage)
+	exec.SetProviderService(upstreamProviderService)
 
 	/* 延迟启动连接池保活（在服务启动后异步进行） */
 	go func() {
@@ -380,7 +390,7 @@ func main() {
 	r := router.New()
 	r.GET("/assets/{filepath:*}", static.HandleAsset)
 	r.HEAD("/assets/{filepath:*}", static.HandleAsset)
-	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, newapiService, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, standbyCtrl, healthChecker, static.IndexHTML)
+	proxyHandler := handler.NewProxyHandler(manager, exec, cfg.APIKeys, cfg.MaxRetry, cfg.EnableHealthyRetry, cfg.ProxyURL, cfg.BaseURL, cfg.EnableHTTP2, cfg.BackendDomain, cfg.BackendResolveAddress, cfg.QuotaCheckConcurrency, cfg.QuotaCheckCacheTTLSec, quotaChecker, qmsgService, newapiService, upstreamProviderService, cfg.QuotaPrecheck, cfg.EmptyRetryMax, cfg.DebugUpstreamStream, cfg.EnableModelSuffixFast, cfg.EnableModelSuffix1M, cfg.EnableModelSuffixImage, cfg.EnableWebSocket, cfg.DebugWSStream, cfg.Enable429ConcurrentRetry, cfg.ConcurrentRetry429TimeoutSec, standbyCtrl, healthChecker, static.IndexHTML)
 	proxyHandler.RegisterRoutes(r)
 	handler.SetupLoginRoutes(r, cfg.AuthDir, cfg.OAuthCallbackPort, cfg.OAuthNoBrowser, cfg.EnableCodexLogin, manager)
 

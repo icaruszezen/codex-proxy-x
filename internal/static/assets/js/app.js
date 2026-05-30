@@ -4,6 +4,7 @@ import { createNewapiFeature } from "./newapi.js";
 import { createQmsgFeature } from "./qmsg.js";
 import { createStandbyFeature } from "./standby.js";
 import { createStatsFeature } from "./stats.js";
+import { createUpstreamProviderFeature } from "./upstream-provider.js";
 import { setLoading } from "./ui.js";
 
 const CRED_KEY = "stats_credentials_v1";
@@ -14,6 +15,7 @@ const VIEW_LOGIN = "login";
 const VIEW_QMSG = "qmsg";
 const VIEW_STANDBY = "standby";
 const VIEW_NEWAPI = "newapi";
+const VIEW_UPSTREAM_PROVIDER = "upstream-provider";
 
 const els = {
   pageSubtitle: document.getElementById("pageSubtitle"),
@@ -24,6 +26,7 @@ const els = {
   loginViewBtn: document.getElementById("loginViewBtn"),
   qmsgViewBtn: document.getElementById("qmsgViewBtn"),
   newapiViewBtn: document.getElementById("newapiViewBtn"),
+  upstreamProviderViewBtn: document.getElementById("upstreamProviderViewBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   quotaCheckBtn: document.getElementById("quotaCheckBtn"),
   clearBtn: document.getElementById("clearBtn"),
@@ -37,6 +40,7 @@ const els = {
   loginView: document.getElementById("loginView"),
   qmsgView: document.getElementById("qmsgView"),
   newapiView: document.getElementById("newapiView"),
+  upstreamProviderView: document.getElementById("upstreamProviderView"),
   loginGenerateBtn: document.getElementById("loginGenerateBtn"),
   loginAuthUrl: document.getElementById("loginAuthUrl"),
   loginUrlBlock: document.getElementById("loginUrlBlock"),
@@ -124,6 +128,19 @@ const els = {
   newapiTestEnableBtn: document.getElementById("newapiTestEnableBtn"),
   newapiTestDisableBtn: document.getElementById("newapiTestDisableBtn"),
   newapiState: document.getElementById("newapiState"),
+  backToStatsFromUpstreamProviderBtn: document.getElementById("backToStatsFromUpstreamProviderBtn"),
+  openSettingsFromUpstreamProviderBtn: document.getElementById("openSettingsFromUpstreamProviderBtn"),
+  upstreamProviderConfigStatus: document.getElementById("upstreamProviderConfigStatus"),
+  upstreamProviderLoadBtn: document.getElementById("upstreamProviderLoadBtn"),
+  upstreamProviderAutoSwitch: document.getElementById("upstreamProviderAutoSwitch"),
+  upstreamProviderBaseURL: document.getElementById("upstreamProviderBaseURL"),
+  upstreamProviderAPIKey: document.getElementById("upstreamProviderAPIKey"),
+  upstreamProviderTimeout: document.getElementById("upstreamProviderTimeout"),
+  upstreamProviderModels: document.getElementById("upstreamProviderModels"),
+  upstreamProviderSaveBtn: document.getElementById("upstreamProviderSaveBtn"),
+  upstreamProviderFetchModelsBtn: document.getElementById("upstreamProviderFetchModelsBtn"),
+  upstreamProviderTestBtn: document.getElementById("upstreamProviderTestBtn"),
+  upstreamProviderState: document.getElementById("upstreamProviderState"),
   standbyStatusBanner: document.getElementById("standbyStatusBanner"),
   standbySummary: document.getElementById("standbySummary"),
   standbyActionState: document.getElementById("standbyActionState"),
@@ -224,6 +241,7 @@ function getViewFromHash() {
   if (hash === "#qmsg") return VIEW_QMSG;
   if (hash === "#standby") return VIEW_STANDBY;
   if (hash === "#newapi") return VIEW_NEWAPI;
+  if (hash === "#upstream-provider" || hash === "#provider") return VIEW_UPSTREAM_PROVIDER;
   return VIEW_STATS;
 }
 
@@ -234,7 +252,8 @@ function updateViewState() {
   const isQmsg = activeView === VIEW_QMSG;
   const isStandby = activeView === VIEW_STANDBY;
   const isNewapi = activeView === VIEW_NEWAPI;
-  const isStats = !isEvents && !isImport && !isLogin && !isQmsg && !isStandby && !isNewapi;
+  const isUpstreamProvider = activeView === VIEW_UPSTREAM_PROVIDER;
+  const isStats = !isEvents && !isImport && !isLogin && !isQmsg && !isStandby && !isNewapi && !isUpstreamProvider;
   els.pageSubtitle.textContent = isEvents
     ? "查看最近自动删除或自动停用的账号事件"
     : isImport
@@ -247,7 +266,9 @@ function updateViewState() {
             ? "主池失效时自动回退的备用账号池"
             : isNewapi
               ? "配置备用池切换时联动的 NewAPI 渠道状态"
-              : "数据只在点击刷新时更新";
+              : isUpstreamProvider
+                ? "配置主池无账号时优先切换的上游 API 提供商"
+                : "数据只在点击刷新时更新";
   els.statsView.classList.toggle("hidden", !isStats);
   els.eventsView.classList.toggle("hidden", !isEvents);
   els.importView.classList.toggle("hidden", !isImport);
@@ -255,6 +276,7 @@ function updateViewState() {
   els.qmsgView.classList.toggle("hidden", !isQmsg);
   if (els.standbyView) els.standbyView.classList.toggle("hidden", !isStandby);
   if (els.newapiView) els.newapiView.classList.toggle("hidden", !isNewapi);
+  if (els.upstreamProviderView) els.upstreamProviderView.classList.toggle("hidden", !isUpstreamProvider);
   els.statsViewBtn.classList.toggle("active", isStats);
   els.eventsViewBtn.classList.toggle("active", isEvents);
   els.importViewBtn.classList.toggle("active", isImport);
@@ -262,6 +284,7 @@ function updateViewState() {
   els.qmsgViewBtn.classList.toggle("active", isQmsg);
   if (els.standbyViewBtn) els.standbyViewBtn.classList.toggle("active", isStandby);
   if (els.newapiViewBtn) els.newapiViewBtn.classList.toggle("active", isNewapi);
+  if (els.upstreamProviderViewBtn) els.upstreamProviderViewBtn.classList.toggle("active", isUpstreamProvider);
   els.refreshBtn.classList.toggle("hidden", !isStats);
   els.clearBtn.classList.toggle("hidden", !isStats);
   els.recoverAllBtn.classList.toggle("hidden", !isStats);
@@ -275,6 +298,7 @@ function setView(view, options = {}) {
   else if (view === VIEW_QMSG) activeView = VIEW_QMSG;
   else if (view === VIEW_STANDBY) activeView = VIEW_STANDBY;
   else if (view === VIEW_NEWAPI) activeView = VIEW_NEWAPI;
+  else if (view === VIEW_UPSTREAM_PROVIDER) activeView = VIEW_UPSTREAM_PROVIDER;
   else activeView = VIEW_STATS;
   updateViewState();
   if (updateHash) {
@@ -290,6 +314,8 @@ function setView(view, options = {}) {
               ? "#standby"
               : activeView === VIEW_NEWAPI
                 ? "#newapi"
+                : activeView === VIEW_UPSTREAM_PROVIDER
+                  ? "#upstream-provider"
                 : "#stats";
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash;
@@ -395,6 +421,22 @@ const standbyFeature = createStandbyFeature({
   }
 });
 
+const upstreamProviderFeature = createUpstreamProviderFeature({
+  els,
+  getCredentials,
+  onMissingCredentials: () => {
+    setLoginError("");
+    showLogin(true);
+  },
+  onCredentialError: message => {
+    setLoginError(message);
+    showLogin(true);
+  },
+  onLoadingChange: isLoading => {
+    setLoading(els.loadingOverlay, isLoading);
+  }
+});
+
 function bindGlobalEvents() {
   els.statsViewBtn.addEventListener("click", () => {
     setView(VIEW_STATS);
@@ -416,6 +458,12 @@ function bindGlobalEvents() {
     els.newapiViewBtn.addEventListener("click", () => {
       setView(VIEW_NEWAPI);
       newapiFeature.ensureLoaded().catch(() => {});
+    });
+  }
+  if (els.upstreamProviderViewBtn) {
+    els.upstreamProviderViewBtn.addEventListener("click", () => {
+      setView(VIEW_UPSTREAM_PROVIDER);
+      upstreamProviderFeature.ensureLoaded().catch(() => {});
     });
   }
   if (els.standbyViewBtn) {
@@ -446,6 +494,11 @@ function bindGlobalEvents() {
       setView(VIEW_STATS);
     });
   }
+  if (els.backToStatsFromUpstreamProviderBtn) {
+    els.backToStatsFromUpstreamProviderBtn.addEventListener("click", () => {
+      setView(VIEW_STATS);
+    });
+  }
   els.openSettingsFromLoginBtn.addEventListener("click", () => {
     setLoginError("");
     showLogin(true);
@@ -471,6 +524,12 @@ function bindGlobalEvents() {
       showLogin(true);
     });
   }
+  if (els.openSettingsFromUpstreamProviderBtn) {
+    els.openSettingsFromUpstreamProviderBtn.addEventListener("click", () => {
+      setLoginError("");
+      showLogin(true);
+    });
+  }
   window.addEventListener("hashchange", () => {
     setView(getViewFromHash(), { updateHash: false });
     if (activeView === VIEW_QMSG) {
@@ -481,6 +540,9 @@ function bindGlobalEvents() {
     }
     if (activeView === VIEW_STANDBY) {
       standbyFeature.ensureLoaded().catch(() => {});
+    }
+    if (activeView === VIEW_UPSTREAM_PROVIDER) {
+      upstreamProviderFeature.ensureLoaded().catch(() => {});
     }
   });
   els.saveCredentialsBtn.addEventListener("click", async () => {
@@ -535,6 +597,7 @@ function init() {
   qmsgFeature.init();
   newapiFeature.init();
   standbyFeature.init();
+  upstreamProviderFeature.init();
   bindGlobalEvents();
   setView(getViewFromHash(), { updateHash: false });
   if (activeView === VIEW_QMSG) {
@@ -545,6 +608,9 @@ function init() {
   }
   if (activeView === VIEW_STANDBY) {
     standbyFeature.ensureLoaded().catch(() => {});
+  }
+  if (activeView === VIEW_UPSTREAM_PROVIDER) {
+    upstreamProviderFeature.ensureLoaded().catch(() => {});
   }
 }
 

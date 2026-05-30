@@ -22,6 +22,7 @@ import (
 	"codex-proxy/internal/netutil"
 	"codex-proxy/internal/thinking"
 	"codex-proxy/internal/translator"
+	"codex-proxy/internal/upstream"
 
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -38,10 +39,11 @@ const (
 
 /* 预分配 SSE 输出字节片段，避免每次事件的内存分配 */
 var (
-	sseDataPrefix    = []byte("data: ")
-	sseDataSuffix    = []byte("\n\n")
-	sseDoneMarker    = []byte("data: [DONE]\n\n")
-	ErrEmptyResponse = errors.New("empty response")
+	sseDataPrefix          = []byte("data: ")
+	sseDataSuffix          = []byte("\n\n")
+	sseDoneMarker          = []byte("data: [DONE]\n\n")
+	ErrEmptyResponse       = errors.New("empty response")
+	ErrProviderUnavailable = errors.New("上游提供商不可用")
 )
 
 /* 与 handler 一致的缓冲与扫描器大小，便于统一调优 */
@@ -79,6 +81,7 @@ type HTTPPoolConfig struct {
 type Executor struct {
 	baseURL              string
 	httpClient           *http.Client
+	providerService      *upstream.Service
 	keepAliveOnce        sync.Once
 	resolveAddr          string
 	keepaliveIntervalSec int
@@ -92,6 +95,13 @@ func (e *Executor) SetDropPartialImage(v bool) {
 		return
 	}
 	e.dropPartialImage = v
+}
+
+func (e *Executor) SetProviderService(service *upstream.Service) {
+	if e == nil {
+		return
+	}
+	e.providerService = service
 }
 
 func accountEmail(account *auth.Account) string {

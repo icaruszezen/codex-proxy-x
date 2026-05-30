@@ -135,13 +135,42 @@ func codexStreamPumpRounds(maxRetry int) int {
 // openCodexResponsesBody 与 OpenCodexResponsesStream 相同：选号、sendWithRetry、首读探测空体/可重试读错并换号。
 // Claude 原始流等非 Pump 路径也经此打开，避免 200 + 空 body 导致客户端 SSE 体完全无字节。
 func (e *Executor) openCodexResponsesBody(ctx context.Context, rc RetryConfig, requestBody []byte, model string) (bodyRC io.ReadCloser, meta CodexResponsesMeta, err error) {
+	return e.openResponsesBody(ctx, rc, requestBody, model, false)
+}
+
+func (e *Executor) openProviderResponsesBody(ctx context.Context, requestBody []byte, model string) (bodyRC io.ReadCloser, meta CodexResponsesMeta, err error) {
+	return e.openResponsesBody(ctx, RetryConfig{}, requestBody, model, true)
+}
+
+func (e *Executor) openResponsesBody(ctx context.Context, rc RetryConfig, requestBody []byte, model string, useProvider bool) (bodyRC io.ReadCloser, meta CodexResponsesMeta, err error) {
 	convertStart := time.Now()
 	thBody, bm, isImage := thinking.ApplyThinking(requestBody, model)
 	meta.BaseModel = bm
 	codexBody := translator.ConvertOpenAIRequestToCodex(meta.BaseModel, thBody, true, isImage)
 	meta.ConvertDur = time.Since(convertStart)
-	apiURL := e.baseURL + "/responses"
 	sendStart := time.Now()
+
+	if useProvider {
+		if e.providerService == nil {
+			meta.SendDur = time.Since(sendStart)
+			return nil, meta, ErrProviderUnavailable
+		}
+		httpResp, serr := e.providerService.SendResponses(ctx, codexBody, true, model)
+		if serr != nil {
+			meta.SendDur = time.Since(sendStart)
+			return nil, meta, serr
+		}
+		meta.SendDur = time.Since(sendStart)
+		bodyOut, perr := probeResponsesBody(httpResp, RetryConfig{}, nil, 0, 1, false)
+		if perr.retry || perr.err != nil {
+			return nil, meta, perr.err
+		}
+		meta.Attempts = 1
+		meta.ReverseTools = translator.BuildReverseToolNameMap(requestBody)
+		return bodyOut, meta, nil
+	}
+
+	apiURL := e.baseURL + "/responses"
 
 	readRounds := 1 + rc.EmptyRetryMax
 	if readRounds < 2 {
@@ -164,79 +193,14 @@ func (e *Executor) openCodexResponsesBody(ctx context.Context, rc RetryConfig, r
 			return nil, meta, serr
 		}
 
-		/* 行缓冲探测：若首段 SSE 仅为额度用尽（如 usage_limit_reached），换号且不把错误字节交给 PumpRawSSE 透传 */
-		br := bufio.NewReader(httpResp.Body)
-		var prelude bytes.Buffer
-		const maxProbeLines = 96
-		const maxProbeBytes = 128 * 1024
-		hitQuota := false
-		var probeErr error
-		for i := 0; i < maxProbeLines && prelude.Len() < maxProbeBytes; i++ {
-			line, rerr := br.ReadBytes('\n')
-			if len(line) > 0 {
-				prelude.Write(line)
-			}
-			if upstreamPrefixIndicatesUsageQuotaExceeded(prelude.Bytes()) {
-				hitQuota = true
-				probeErr = rerr
-				break
-			}
-			if rerr != nil {
-				probeErr = rerr
-				break
-			}
-		}
-
-		if hitQuota && round+1 < readRounds {
-			_ = httpResp.Body.Close()
-			acc.RecordFailure()
-			handleAccountError(acc, 429, codexQuotaPayloadForCooldown(prelude.Bytes()))
-			if rc.OnAfterUpstreamErrFn != nil {
-				rc.OnAfterUpstreamErrFn(acc, 429)
-			}
-			if rc.On429RecoveryFn != nil {
-				go rc.On429RecoveryFn(context.Background(), acc)
-			}
+		bodyOut, perr := probeResponsesBody(httpResp, rc, acc, round+1, readRounds, true)
+		meta.SendDur = time.Since(sendStart)
+		if perr.retry {
 			excluded[acc.FilePath] = true
-			log.Warnf("responses-stream 上游首段为额度用尽类错误，换号重试 (%d/%d) account=%s", round+1, readRounds, acc.GetEmail())
 			continue
 		}
-
-		meta.SendDur = time.Since(sendStart)
-
-		if probeErr != nil && probeErr != io.EOF {
-			_ = httpResp.Body.Close()
-			acc.RecordFailure()
-			if rc.OnAfterUpstreamErrFn != nil {
-				rc.OnAfterUpstreamErrFn(acc, 0)
-			}
-			if isRetryableUpstreamReadErr(probeErr) && round+1 < readRounds {
-				excluded[acc.FilePath] = true
-				log.Warnf("responses-stream 首读失败，换号/重建连接重试 (%d/%d) account=%s: %v", round+1, readRounds, acc.GetEmail(), wrapReadErr(probeErr))
-				continue
-			}
-			return nil, meta, fmt.Errorf("读取上游流失败: %w", wrapReadErr(probeErr))
-		}
-
-		pr := prelude.Bytes()
-		if len(pr) == 0 && probeErr == io.EOF {
-			_ = httpResp.Body.Close()
-			acc.RecordFailure()
-			if rc.OnAfterUpstreamErrFn != nil {
-				rc.OnAfterUpstreamErrFn(acc, 0)
-			}
-			if round+1 < readRounds {
-				excluded[acc.FilePath] = true
-				log.Warnf("responses-stream 上游立即 EOF，换号重试 (%d/%d) account=%s", round+1, readRounds, acc.GetEmail())
-				continue
-			}
-			return nil, meta, fmt.Errorf("读取上游流失败: 空响应")
-		}
-
-		tail := &bufioTailCloser{r: br, c: httpResp.Body}
-		var bodyOut io.ReadCloser = tail
-		if len(pr) > 0 {
-			bodyOut = &prefixThenRestCloser{prefix: append([]byte(nil), pr...), rest: tail}
+		if perr.err != nil {
+			return nil, meta, perr.err
 		}
 
 		meta.Account = acc
@@ -248,10 +212,113 @@ func (e *Executor) openCodexResponsesBody(ctx context.Context, rc RetryConfig, r
 	return nil, meta, fmt.Errorf("读取上游流失败")
 }
 
+type probeResponseError struct {
+	err   error
+	retry bool
+}
+
+func (p probeResponseError) Error() string {
+	if p.err == nil {
+		return ""
+	}
+	return p.err.Error()
+}
+
+func probeResponsesBody(httpResp *http.Response, rc RetryConfig, acc *auth.Account, round, readRounds int, codexAccountRetry bool) (io.ReadCloser, probeResponseError) {
+	br := bufio.NewReader(httpResp.Body)
+	var prelude bytes.Buffer
+	const maxProbeLines = 96
+	const maxProbeBytes = 128 * 1024
+	hitQuota := false
+	var probeErr error
+	for i := 0; i < maxProbeLines && prelude.Len() < maxProbeBytes; i++ {
+		line, rerr := br.ReadBytes('\n')
+		if len(line) > 0 {
+			prelude.Write(line)
+		}
+		if upstreamPrefixIndicatesUsageQuotaExceeded(prelude.Bytes()) {
+			hitQuota = true
+			probeErr = rerr
+			break
+		}
+		if rerr != nil {
+			probeErr = rerr
+			break
+		}
+	}
+
+	if hitQuota && codexAccountRetry && acc != nil && round < readRounds {
+		_ = httpResp.Body.Close()
+		acc.RecordFailure()
+		handleAccountError(acc, 429, codexQuotaPayloadForCooldown(prelude.Bytes()))
+		if rc.OnAfterUpstreamErrFn != nil {
+			rc.OnAfterUpstreamErrFn(acc, 429)
+		}
+		if rc.On429RecoveryFn != nil {
+			go rc.On429RecoveryFn(context.Background(), acc)
+		}
+		log.Warnf("responses-stream 上游首段为额度用尽类错误，换号重试 (%d/%d) account=%s", round, readRounds, acc.GetEmail())
+		return nil, probeResponseError{retry: true}
+	}
+
+	if probeErr != nil && probeErr != io.EOF {
+		_ = httpResp.Body.Close()
+		if acc != nil {
+			acc.RecordFailure()
+			if rc.OnAfterUpstreamErrFn != nil {
+				rc.OnAfterUpstreamErrFn(acc, 0)
+			}
+		}
+		if codexAccountRetry && acc != nil && isRetryableUpstreamReadErr(probeErr) && round < readRounds {
+			log.Warnf("responses-stream 首读失败，换号/重建连接重试 (%d/%d) account=%s: %v", round, readRounds, acc.GetEmail(), wrapReadErr(probeErr))
+			return nil, probeResponseError{retry: true}
+		}
+		return nil, probeResponseError{err: fmt.Errorf("读取上游流失败: %w", wrapReadErr(probeErr))}
+	}
+
+	pr := prelude.Bytes()
+	if len(pr) == 0 && probeErr == io.EOF {
+		_ = httpResp.Body.Close()
+		if acc != nil {
+			acc.RecordFailure()
+			if rc.OnAfterUpstreamErrFn != nil {
+				rc.OnAfterUpstreamErrFn(acc, 0)
+			}
+		}
+		if codexAccountRetry && acc != nil && round < readRounds {
+			log.Warnf("responses-stream 上游立即 EOF，换号重试 (%d/%d) account=%s", round, readRounds, acc.GetEmail())
+			return nil, probeResponseError{retry: true}
+		}
+		return nil, probeResponseError{err: fmt.Errorf("读取上游流失败: 空响应")}
+	}
+
+	tail := &bufioTailCloser{r: br, c: httpResp.Body}
+	var bodyOut io.ReadCloser = tail
+	if len(pr) > 0 {
+		bodyOut = &prefixThenRestCloser{prefix: append([]byte(nil), pr...), rest: tail}
+	}
+	return bodyOut, probeResponseError{}
+}
+
 // OpenCodexResponsesStream 完成选号、重试与首包前的 HTTP 往返；调用方在写入客户端 SSE 头后再 Pump。
 // 在返回前做一次首读：若立即遇 GOAWAY 等可重试错误则关连接换号重来，减少「已 200 后 pump 才断」的失败率。
 func (e *Executor) OpenCodexResponsesStream(ctx context.Context, rc RetryConfig, requestBody []byte, model string) (*CodexResponsesStream, error) {
-	bodyRC, meta, err := e.openCodexResponsesBody(ctx, rc, requestBody, model)
+	return e.openCodexResponsesStream(ctx, rc, requestBody, model, false)
+}
+
+func (e *Executor) OpenProviderResponsesStream(ctx context.Context, requestBody []byte, model string) (*CodexResponsesStream, error) {
+	return e.openCodexResponsesStream(ctx, RetryConfig{MaxRetry: 0}, requestBody, model, true)
+}
+
+func (e *Executor) openCodexResponsesStream(ctx context.Context, rc RetryConfig, requestBody []byte, model string, useProvider bool) (*CodexResponsesStream, error) {
+	var bodyRC io.ReadCloser
+	var meta CodexResponsesMeta
+	var err error
+	if useProvider {
+		bodyRC, meta, err = e.openProviderResponsesBody(ctx, requestBody, model)
+	} else {
+		bodyRC, meta, err = e.openCodexResponsesBody(ctx, rc, requestBody, model)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +336,13 @@ func (e *Executor) OpenCodexResponsesStream(ctx context.Context, rc RetryConfig,
 		reopenExcluded:      make(map[string]bool),
 		debugUpstreamStream: rc.DebugUpstreamStream,
 		dropPartialImage:    e.dropPartialImage,
+	}
+	if useProvider {
+		s.pumpRounds = 1
+		s.reopenFn = func(ctx context.Context) (io.ReadCloser, CodexResponsesMeta, error) {
+			return e.openProviderResponsesBody(ctx, requestBody, model)
+		}
+		return s, nil
 	}
 	s.reopenFn = func(ctx context.Context) (io.ReadCloser, CodexResponsesMeta, error) {
 		rcEx := MergeRetryConfigExcluded(rc, s.reopenExcluded)
@@ -291,17 +365,34 @@ type CollectedCodexSSE struct {
 
 // CollectCodexResponsesSSE 打开上游 /responses SSE，缓存直到 response.completed 后返回，不向下游写入任何字节。
 func (e *Executor) CollectCodexResponsesSSE(ctx context.Context, rc RetryConfig, requestBody []byte, model string) (*CollectedCodexSSE, error) {
+	return e.collectResponsesSSE(ctx, rc, requestBody, model, false)
+}
+
+func (e *Executor) CollectProviderResponsesSSE(ctx context.Context, requestBody []byte, model string) (*CollectedCodexSSE, error) {
+	return e.collectResponsesSSE(ctx, RetryConfig{}, requestBody, model, true)
+}
+
+func (e *Executor) collectResponsesSSE(ctx context.Context, rc RetryConfig, requestBody []byte, model string, useProvider bool) (*CollectedCodexSSE, error) {
 	bridges := CodexStreamOpenBridgeMax(rc.MaxRetry)
+	if useProvider {
+		bridges = 1
+	}
 	var lastErr error
 	for b := 0; b < bridges; b++ {
 		openCtx := ctx
 		if b > 0 {
 			openCtx = context.Background()
 		}
-		s, err := e.OpenCodexResponsesStream(openCtx, rc, requestBody, model)
+		var s *CodexResponsesStream
+		var err error
+		if useProvider {
+			s, err = e.OpenProviderResponsesStream(openCtx, requestBody, model)
+		} else {
+			s, err = e.OpenCodexResponsesStream(openCtx, rc, requestBody, model)
+		}
 		if err != nil {
 			lastErr = err
-			if b < bridges-1 && IsRetryableOpenCodexError(err) {
+			if !useProvider && b < bridges-1 && IsRetryableOpenCodexError(err) {
 				log.Warnf("codex nonstream 聚合 open 全量重连 %d/%d: %v", b+1, bridges, err)
 				continue
 			}
@@ -312,7 +403,7 @@ func (e *Executor) CollectCodexResponsesSSE(ctx context.Context, rc RetryConfig,
 			return collected, nil
 		}
 		lastErr = err
-		if b >= bridges-1 || !IsRetryableStreamPumpForBridge(err) {
+		if useProvider || b >= bridges-1 || !IsRetryableStreamPumpForBridge(err) {
 			return nil, err
 		}
 		log.Warnf("codex nonstream 聚合 pump 全量重连 %d/%d: %v", b+1, bridges, err)
@@ -352,7 +443,7 @@ func (s *CodexResponsesStream) CollectUntilCompleted(ctx context.Context) (*Coll
 			if s.debugUpstreamStream {
 				ae := ""
 				if s.account != nil {
-					ae = s.account.GetEmail()
+					ae = accountEmail(s.account)
 				}
 				logUpstreamStreamChunk("nonstream_collect_line", s.BaseModel, ae, line)
 			}
@@ -408,14 +499,12 @@ func (s *CodexResponsesStream) CollectUntilCompleted(ctx context.Context) (*Coll
 			lastErr = fmt.Errorf("%w: 未收到 response.completed 事件 first_type=%q last_type=%q lines=%d", ErrEmptyResponse, firstType, lastType, localLines)
 		}
 
-		if s.account != nil {
-			s.account.RecordFailure()
-		}
+		s.recordFailure()
 		if round >= s.pumpRounds-1 || s.reopenFn == nil || !PumpShouldReopenNoClientBytes(lastErr) {
 			return nil, lastErr
 		}
-		if s.account != nil && s.account.FilePath != "" {
-			s.reopenExcluded[s.account.FilePath] = true
+		if fp := s.accountPickKey(); fp != "" {
+			s.reopenExcluded[fp] = true
 		}
 		newBody, newMeta, rerr := s.reopenFn(ctx)
 		if rerr != nil {
@@ -423,7 +512,7 @@ func (s *CodexResponsesStream) CollectUntilCompleted(ctx context.Context) (*Coll
 		}
 		failedEmail := ""
 		if s.account != nil {
-			failedEmail = s.account.GetEmail()
+			failedEmail = accountEmail(s.account)
 		}
 		log.Warnf("nonstream 聚合未得到 completed，换号重试 (%d/%d) account=%s: %v", round+1, s.pumpRounds, failedEmail, lastErr)
 		s.account = newMeta.Account
@@ -433,6 +522,31 @@ func (s *CodexResponsesStream) CollectUntilCompleted(ctx context.Context) (*Coll
 		s.reverseTools = newMeta.ReverseTools
 	}
 	return nil, lastErr
+}
+
+func (s *CodexResponsesStream) accountPickKey() string {
+	if s == nil || s.account == nil {
+		return ""
+	}
+	return s.account.FilePath
+}
+
+func (s *CodexResponsesStream) recordFailure() {
+	if s != nil && s.account != nil {
+		s.account.RecordFailure()
+	}
+}
+
+func (s *CodexResponsesStream) recordSuccess() {
+	if s != nil && s.account != nil {
+		s.account.RecordSuccess()
+	}
+}
+
+func (s *CodexResponsesStream) recordUsage(inputTokens, outputTokens, totalTokens int64) {
+	if s != nil && s.account != nil {
+		s.account.RecordUsage(inputTokens, outputTokens, totalTokens)
+	}
 }
 
 // UpstreamBody 返回当前上游响应体，由调用方在读完后 Close（与 PumpChatCompletion 的 defer 语义一致）。
@@ -474,7 +588,7 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 			if chunkCount > 0 || s.reopenFn == nil || !PumpShouldReopenNoClientBytes(scanErr) {
 				break
 			}
-			if fp := s.account.FilePath; fp != "" {
+			if fp := s.accountPickKey(); fp != "" {
 				s.reopenExcluded[fp] = true
 			}
 			_ = s.body.Close()
@@ -482,8 +596,8 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 			if rerr != nil {
 				break
 			}
-			s.account.RecordFailure()
-			log.Warnf("stream pump 上游错误，换号重试 account=%s: %v", s.account.GetEmail(), wrapReadErr(scanErr))
+			s.recordFailure()
+			log.Warnf("stream pump 上游错误，换号重试 account=%s: %v", accountEmail(s.account), wrapReadErr(scanErr))
 			s.account = newMeta.Account
 			s.Attempts += newMeta.Attempts
 			s.SendDur = newMeta.SendDur
@@ -504,7 +618,7 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 			if s.debugUpstreamStream {
 				ae := ""
 				if s.account != nil {
-					ae = s.account.GetEmail()
+					ae = accountEmail(s.account)
 				}
 				logUpstreamStreamChunk("chat_sse_line", s.BaseModel, ae, line)
 			}
@@ -536,7 +650,7 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 				if !firstChunkAt.IsZero() {
 					firstChunkDur = firstChunkAt.Sub(streamStart)
 				}
-				log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v pump_elapsed=%v chunks=%d e2e_est=%v (canceled)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, time.Duration(0), time.Duration(0), time.Since(streamStart), chunkCount, s.SendDur+time.Since(streamStart))
+				log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v pump_elapsed=%v chunks=%d e2e_est=%v (canceled)", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, time.Duration(0), time.Duration(0), time.Since(streamStart), chunkCount, s.SendDur+time.Since(streamStart))
 				/* 已向客户端承诺 SSE：无任何 data 时须返回错误，避免 200 + 空体 */
 				if chunkCount == 0 {
 					return fmt.Errorf("读取流式响应中断: %w", scanErr)
@@ -549,17 +663,17 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 		// 扫描正常结束：无正文/工具/思维（含仅有元数据/ error.failed / 空 response.completed），且未向客户端写 chunk → 换号再拉流
 		contentEmpty := !state.HasText && !state.HasToolCall && !state.HasReasoning
 		if contentEmpty && chunkCount == 0 && s.reopenFn != nil && round < s.pumpRounds-1 {
-			if fp := s.account.FilePath; fp != "" {
+			if fp := s.accountPickKey(); fp != "" {
 				s.reopenExcluded[fp] = true
 			}
 			_ = s.body.Close()
 			newBody, newMeta, rerr := s.reopenFn(pumpCtx)
 			if rerr != nil {
-				log.Warnf("stream pump 上游无有效 chunk（含 SSE error/failed），换号 reopen 失败 round=%d/%d account=%s: %v", round+1, s.pumpRounds, s.account.GetEmail(), rerr)
+				log.Warnf("stream pump 上游无有效 chunk（含 SSE error/failed），换号 reopen 失败 round=%d/%d account=%s: %v", round+1, s.pumpRounds, accountEmail(s.account), rerr)
 				break
 			}
-			failedEmail := s.account.GetEmail()
-			s.account.RecordFailure()
+			failedEmail := accountEmail(s.account)
+			s.recordFailure()
 			log.Warnf("stream pump 上游空响应/SSE 失败，换号重试 (%d/%d) account=%s", round+1, s.pumpRounds, failedEmail)
 			s.account = newMeta.Account
 			s.Attempts += newMeta.Attempts
@@ -570,7 +684,7 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 			continue
 		}
 		if contentEmpty && chunkCount == 0 && s.reopenFn != nil && round >= s.pumpRounds-1 {
-			log.Warnf("stream pump 上游无有效 chunk，已达 pump 内换号上限 (pumpRounds=%d) account=%s %s", s.pumpRounds, s.account.GetEmail(), state.EmptyUpstreamDiag(pumpScanLines))
+			log.Warnf("stream pump 上游无有效 chunk，已达 pump 内换号上限 (pumpRounds=%d) account=%s %s", s.pumpRounds, accountEmail(s.account), state.EmptyUpstreamDiag(pumpScanLines))
 		}
 		break
 	}
@@ -588,7 +702,7 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 			tailAfterCompleted = time.Since(completedAt)
 		}
 		pumpEl := time.Since(streamStart)
-		log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v pump_elapsed=%v chunks=%d e2e_est=%v (ERR)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, completedDur, tailAfterCompleted, pumpEl, chunkCount, s.SendDur+pumpEl)
+		log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v pump_elapsed=%v chunks=%d e2e_est=%v (ERR)", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, completedDur, tailAfterCompleted, pumpEl, chunkCount, s.SendDur+pumpEl)
 		return wrapReadErr(scanErr)
 	}
 
@@ -605,9 +719,9 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 			tailAfterCompleted = time.Since(completedAt)
 		}
 		pumpEl := time.Since(streamStart)
-		log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v pump_elapsed=%v chunks=%d e2e_est=%v (empty)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, completedDur, tailAfterCompleted, pumpEl, chunkCount, s.SendDur+pumpEl)
+		log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v pump_elapsed=%v chunks=%d e2e_est=%v (empty)", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, completedDur, tailAfterCompleted, pumpEl, chunkCount, s.SendDur+pumpEl)
 		diag := state.EmptyUpstreamDiag(pumpScanLines)
-		log.Warnf("chat stream 上游空响应: model=%s account=%s attempts=%d %s", s.BaseModel, s.account.GetEmail(), s.Attempts, diag)
+		log.Warnf("chat stream 上游空响应: model=%s account=%s attempts=%d %s", s.BaseModel, accountEmail(s.account), s.Attempts, diag)
 		return fmt.Errorf("%w: %s", ErrEmptyResponse, diag)
 	}
 
@@ -649,9 +763,9 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 	doneWriteDur := time.Since(doneWriteStart)
 
 	if state.UsageInput > 0 || state.UsageOutput > 0 {
-		s.account.RecordUsage(state.UsageInput, state.UsageOutput, state.UsageTotal)
+		s.recordUsage(state.UsageInput, state.UsageOutput, state.UsageTotal)
 	}
-	s.account.RecordSuccess()
+	s.recordSuccess()
 	firstChunkDur := time.Duration(0)
 	completedDur := time.Duration(0)
 	tailAfterCompleted := time.Duration(0)
@@ -663,7 +777,7 @@ func (s *CodexResponsesStream) PumpChatCompletion(w io.Writer, flush func()) err
 		tailAfterCompleted = time.Since(completedAt)
 	}
 	pumpEl := time.Since(streamStart)
-	log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v done_write=%v pump_elapsed=%v chunks=%d e2e_est=%v", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, completedDur, tailAfterCompleted, doneWriteDur, pumpEl, chunkCount, s.SendDur+pumpEl)
+	log.Infof("req summary stream model=%s account=%s attempts=%d convert=%v upstream_open_first_read=%v pump_first_client_chunk=%v pump_to_completed=%v tail_after_completed=%v done_write=%v pump_elapsed=%v chunks=%d e2e_est=%v", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, firstChunkDur, completedDur, tailAfterCompleted, doneWriteDur, pumpEl, chunkCount, s.SendDur+pumpEl)
 	return nil
 }
 
@@ -689,7 +803,7 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 			_ = n
 			if fErr != nil {
 				if errors.Is(fErr, context.Canceled) {
-					log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (canceled)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+					log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (canceled)", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 					if sseBodyBytes == 0 {
 						return fmt.Errorf("读取流式响应中断: %w", fErr)
 					}
@@ -697,8 +811,8 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 				}
 				if fErr == io.EOF {
 					if sseBodyBytes > 0 {
-						s.account.RecordSuccess()
-						log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+						s.recordSuccess()
+						log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 						return nil
 					}
 					pumpErr = io.EOF
@@ -707,8 +821,8 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 				}
 			} else {
 				if sseBodyBytes > 0 {
-					s.account.RecordSuccess()
-					log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+					s.recordSuccess()
+					log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 					return nil
 				}
 				pumpErr = io.EOF
@@ -720,7 +834,7 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 					if s.debugUpstreamStream {
 						ae := ""
 						if s.account != nil {
-							ae = s.account.GetEmail()
+							ae = accountEmail(s.account)
 						}
 						logUpstreamStreamChunk("responses_raw_read", s.BaseModel, ae, buf[:n])
 					}
@@ -735,15 +849,15 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 				if readErr != nil {
 					if readErr == io.EOF {
 						if sseBodyBytes > 0 {
-							s.account.RecordSuccess()
-							log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+							s.recordSuccess()
+							log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 							return nil
 						}
 						pumpErr = io.EOF
 						break
 					}
 					if errors.Is(readErr, context.Canceled) {
-						log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (canceled)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+						log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (canceled)", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 						if sseBodyBytes == 0 {
 							return fmt.Errorf("读取流式响应中断: %w", readErr)
 						}
@@ -756,17 +870,17 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 		}
 
 		if pumpErr != nil && sseBodyBytes == 0 && s.reopenFn != nil && round < s.pumpRounds-1 {
-			if fp := s.account.FilePath; fp != "" {
+			if fp := s.accountPickKey(); fp != "" {
 				s.reopenExcluded[fp] = true
 			}
 			_ = s.body.Close()
 			newBody, newMeta, rerr := s.reopenFn(pumpCtx)
 			if rerr != nil {
-				log.Warnf("responses-stream raw 零字节，换号 reopen 失败 round=%d/%d account=%s: %v", round+1, s.pumpRounds, s.account.GetEmail(), rerr)
+				log.Warnf("responses-stream raw 零字节，换号 reopen 失败 round=%d/%d account=%s: %v", round+1, s.pumpRounds, accountEmail(s.account), rerr)
 				break
 			}
-			failedEmail := s.account.GetEmail()
-			s.account.RecordFailure()
+			failedEmail := accountEmail(s.account)
+			s.recordFailure()
 			log.Warnf("responses-stream raw 尚未发往客户端，换号重试 (%d/%d) account=%s err=%v", round+1, s.pumpRounds, failedEmail, pumpErr)
 			s.account = newMeta.Account
 			s.Attempts += newMeta.Attempts
@@ -776,7 +890,7 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 		}
 
 		if pumpErr == io.EOF && sseBodyBytes == 0 {
-			log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (empty)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+			log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (empty)", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 			return fmt.Errorf("%w: responses raw sse 0 bytes", ErrEmptyResponse)
 		}
 
@@ -788,7 +902,7 @@ func (s *CodexResponsesStream) PumpRawSSE(w io.Writer, flush func()) error {
 
 	if pumpErr != nil {
 		log.Errorf("读取流式响应失败: %v", pumpErr)
-		log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (ERR)", s.BaseModel, s.account.GetEmail(), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
+		log.Infof("req summary responses-stream model=%s account=%s attempts=%d convert=%v upstream=%v total=%v (ERR)", s.BaseModel, accountEmail(s.account), s.Attempts, s.ConvertDur, s.SendDur, time.Since(streamStart))
 		return wrapReadErr(pumpErr)
 	}
 	return fmt.Errorf("%w: responses stream pump", ErrEmptyResponse)

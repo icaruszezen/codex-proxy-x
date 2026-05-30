@@ -21,6 +21,7 @@
         <button id="loginViewBtn" class="secondary">账号登录</button>
         <button id="qmsgViewBtn" class="secondary">qmsg 通知</button>
         <button id="newapiViewBtn" class="secondary">NewAPI 渠道</button>
+        <button id="upstreamProviderViewBtn" class="secondary">上游提供商</button>
         <button id="refreshBtn">刷新数据</button>
         <button id="quotaCheckBtn" class="secondary">查询额度</button>
         <button id="clearBtn" class="secondary">清空缓存</button>
@@ -477,6 +478,63 @@
             <button id="openSettingsFromNewapiBtn" class="ghost">设置接口</button>
           </div>
           <div id="newapiState" class="alert-stack"></div>
+        </div>
+      </section>
+
+      <section id="upstreamProviderView" class="view hidden">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>上游 API 提供商</h2>
+              <p class="panel-note">配置单个 OpenAI Responses 兼容上游。开启自动切换后，主账号池无可用账号时会先请求该 Provider；Provider 请求失败后再进入备用账号池。</p>
+            </div>
+            <div class="hero-actions">
+              <span id="upstreamProviderConfigStatus" class="pill">未加载</span>
+              <button id="upstreamProviderLoadBtn" class="ghost">重新加载</button>
+              <button id="backToStatsFromUpstreamProviderBtn" class="ghost">返回统计</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel qmsg-form upstream-provider-form">
+          <div class="form-grid">
+            <label class="check-row">
+              <input id="upstreamProviderAutoSwitch" type="checkbox" />
+              <span>开启主账号池无可用账号时自动切换到上游 Provider</span>
+            </label>
+            <div>
+              <label for="upstreamProviderBaseURL">Provider API 地址</label>
+              <input id="upstreamProviderBaseURL" type="url" placeholder="https://api.example.com/v1" />
+              <p class="panel-note">可填写根地址或 <code>/v1</code> 地址；服务端会规范化后调用 <code>/v1/models</code> 和 <code>/v1/responses</code>。</p>
+            </div>
+            <div>
+              <label for="upstreamProviderAPIKey">Provider API Key</label>
+              <input id="upstreamProviderAPIKey" type="text" autocomplete="off" placeholder="输入上游 Provider API Key" />
+              <p class="panel-note">API Key 保存后只显示掩码；重新保存时留空表示不修改。</p>
+            </div>
+            <div>
+              <label for="upstreamProviderTimeout">请求超时（秒）</label>
+              <input id="upstreamProviderTimeout" type="number" min="1" max="120" step="1" value="15" />
+            </div>
+          </div>
+
+          <div>
+            <div class="section-head compact-head">
+              <div>
+                <label for="upstreamProviderModels">可用模型列表</label>
+                <p class="panel-note">点击“拉取模型列表”会请求上游 <code>/v1/models</code>，也可以手动编辑，每行一个模型。</p>
+              </div>
+              <button id="upstreamProviderFetchModelsBtn" class="secondary" type="button">拉取模型列表</button>
+            </div>
+            <textarea id="upstreamProviderModels" class="compact-textarea" placeholder="模型列表，每行一个，例如 gpt-5"></textarea>
+          </div>
+
+          <div class="hero-actions">
+            <button id="upstreamProviderSaveBtn">保存配置</button>
+            <button id="upstreamProviderTestBtn" class="secondary">测试连接</button>
+            <button id="openSettingsFromUpstreamProviderBtn" class="ghost">设置接口</button>
+          </div>
+          <div id="upstreamProviderState" class="alert-stack"></div>
         </div>
       </section>
     </main>

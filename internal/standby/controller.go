@@ -150,6 +150,20 @@ func (c *Controller) ManagerOf(acc *auth.Account) *auth.Manager {
 	return nil
 }
 
+func (c *Controller) PickPrimaryOnly(model string, excluded map[string]bool) (*auth.Account, error) {
+	if c == nil || c.primary == nil {
+		return nil, fmt.Errorf("standby controller 未初始化")
+	}
+	acc, err := c.primary.PickExcluding(model, excluded)
+	if err != nil {
+		c.markPrimaryUnavailableForNewAPI()
+		return nil, err
+	}
+	c.markPrimaryAvailableForNewAPI()
+	c.deactivateIfActive()
+	return acc, nil
+}
+
 /**
  * Pick 主入口：先尝试主池 → 成功则停用备用模式；否则尝试激活备用池并选号
  *
@@ -179,6 +193,42 @@ func (c *Controller) Pick(model string, excluded map[string]bool) (*auth.Account
 			return nil, err
 		}
 	}
+}
+
+func (c *Controller) PickStandbyOnly(model string, excluded map[string]bool) (*auth.Account, error) {
+	if c == nil || c.standby == nil || c.standby.AccountCount() == 0 {
+		return nil, fmt.Errorf("备用账号池无可用账号")
+	}
+	acc, err := c.standby.PickExcluding(model, excluded)
+	if err != nil {
+		return nil, err
+	}
+	c.activateIfNeeded()
+	return acc, nil
+}
+
+func (c *Controller) PickStandbyRecentlySuccessful(model string, excluded map[string]bool) (*auth.Account, error) {
+	if c == nil || c.standby == nil || c.standby.AccountCount() == 0 {
+		return nil, fmt.Errorf("备用账号池无可用账号")
+	}
+	acc, err := c.standby.PickRecentlySuccessful(model, excluded)
+	if err != nil {
+		return nil, err
+	}
+	c.activateIfNeeded()
+	return acc, nil
+}
+
+func (c *Controller) PickStandbyIgnoringCooldown(model string, excluded map[string]bool) (*auth.Account, error) {
+	if c == nil || c.standby == nil || c.standby.AccountCount() == 0 {
+		return nil, fmt.Errorf("备用账号池无可用账号")
+	}
+	acc, err := c.standby.PickIgnoringCooldown(model, excluded)
+	if err != nil {
+		return nil, err
+	}
+	c.activateIfNeeded()
+	return acc, nil
 }
 
 /**

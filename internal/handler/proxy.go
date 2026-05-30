@@ -23,6 +23,7 @@ import (
 	"codex-proxy/internal/notify"
 	"codex-proxy/internal/standby"
 	"codex-proxy/internal/thinking"
+	"codex-proxy/internal/upstream"
 
 	fasthttprouter "github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
@@ -80,6 +81,7 @@ type ProxyHandler struct {
 	quotaChecker              *auth.QuotaChecker
 	qmsgService               *notify.Service
 	newapiService             *notify.NewAPIService
+	upstreamProviderService   *upstream.Service
 	quotaPrecheck             bool /* true：选号后 wham 预检；false：直发上游，401 换号+异步 OAuth */
 	indexHTML                 []byte
 	emptyRetryMax             int
@@ -93,8 +95,9 @@ type ProxyHandler struct {
 	concurrentRetry429Timeout time.Duration /* 并发重试最大等待时间 */
 	auth401RecoverTracks      sync.Map      /* key: filePath, value: *auth401RecoverTrack */
 	/* retryCfg 在首请求时构建一次，避免每条对话重复分配闭包与 RetryConfig */
-	retryCfgOnce sync.Once
-	retryCfg     executor.RetryConfig
+	retryCfgOnce    sync.Once
+	retryCfg        executor.RetryConfig
+	standbyRetryCfg executor.RetryConfig
 }
 
 /* auth401RecoverTrack 追踪单个账号的 401 恢复情况 */
@@ -116,7 +119,7 @@ type auth401RecoverTrack struct {
  * @param debugUpstreamStream - 是否 Info 打印上游 Codex SSE 原文（对应配置 debug-upstream-stream）
  * @returns *ProxyHandler - 代理处理器实例
  */
-func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, newapiService *notify.NewAPIService, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, indexHTML []byte) *ProxyHandler {
+func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, newapiService *notify.NewAPIService, upstreamProviderService *upstream.Service, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, indexHTML []byte) *ProxyHandler {
 	if maxRetry < 0 {
 		maxRetry = 0
 	}
@@ -127,26 +130,27 @@ func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []s
 		quotaChecker = auth.NewQuotaChecker(baseURL, proxyURL, quotaCheckConcurrency, enableHTTP2, backendDomain, backendResolveAddress, time.Duration(quotaCheckCacheTTLSec)*time.Second)
 	}
 	return &ProxyHandler{
-		manager:              manager,
-		standbyCtrl:          standbyCtrl,
-		standbyHealthChecker: standbyHealthChecker,
-		executor:             exec,
-		apiKeys:              apiKeys,
-		maxRetry:             maxRetry,
-		enableHealthyRetry:   enableHealthyRetry,
-		quotaChecker:         quotaChecker,
-		qmsgService:          qmsgService,
-		newapiService:        newapiService,
-		quotaPrecheck:        quotaPrecheck,
-		indexHTML:            indexHTML,
-		emptyRetryMax:        emptyRetryMax,
-		debugUpstreamStream:  debugUpstreamStream,
-		enableModelFast:      enableModelFast,
-		enableModel1M:        enableModel1M,
-		enableModelImage:     enableModelImage,
-		enableWebSocket:      enableWebSocket,
-		debugWSStream:        debugWSStream,
-		concurrentRetry429:   concurrentRetry429,
+		manager:                 manager,
+		standbyCtrl:             standbyCtrl,
+		standbyHealthChecker:    standbyHealthChecker,
+		executor:                exec,
+		apiKeys:                 apiKeys,
+		maxRetry:                maxRetry,
+		enableHealthyRetry:      enableHealthyRetry,
+		quotaChecker:            quotaChecker,
+		qmsgService:             qmsgService,
+		newapiService:           newapiService,
+		upstreamProviderService: upstreamProviderService,
+		quotaPrecheck:           quotaPrecheck,
+		indexHTML:               indexHTML,
+		emptyRetryMax:           emptyRetryMax,
+		debugUpstreamStream:     debugUpstreamStream,
+		enableModelFast:         enableModelFast,
+		enableModel1M:           enableModel1M,
+		enableModelImage:        enableModelImage,
+		enableWebSocket:         enableWebSocket,
+		debugWSStream:           debugWSStream,
+		concurrentRetry429:      concurrentRetry429,
 		concurrentRetry429Timeout: func() time.Duration {
 			if concurrentRetry429TimeoutSec > 0 {
 				return time.Duration(concurrentRetry429TimeoutSec) * time.Second
@@ -229,6 +233,9 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	newapiConfigHandler := h.handleNewAPIConfig
 	newapiTestEnableHandler := h.handleNewAPITestEnable
 	newapiTestDisableHandler := h.handleNewAPITestDisable
+	upstreamProviderConfigHandler := h.handleUpstreamProviderConfig
+	upstreamProviderModelsFetchHandler := h.handleUpstreamProviderModelsFetch
+	upstreamProviderTestHandler := h.handleUpstreamProviderTest
 	standbyStateHandler := h.handleStandbyState
 	standbyIngestHandler := h.handleStandbyAccountsIngest
 	standbyExportHandler := h.handleStandbyAccountsExport
@@ -245,6 +252,9 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 		newapiConfigHandler = h.authMiddleware(h.handleNewAPIConfig)
 		newapiTestEnableHandler = h.authMiddleware(h.handleNewAPITestEnable)
 		newapiTestDisableHandler = h.authMiddleware(h.handleNewAPITestDisable)
+		upstreamProviderConfigHandler = h.authMiddleware(h.handleUpstreamProviderConfig)
+		upstreamProviderModelsFetchHandler = h.authMiddleware(h.handleUpstreamProviderModelsFetch)
+		upstreamProviderTestHandler = h.authMiddleware(h.handleUpstreamProviderTest)
 		standbyStateHandler = h.authMiddleware(h.handleStandbyState)
 		standbyIngestHandler = h.authMiddleware(h.handleStandbyAccountsIngest)
 		standbyExportHandler = h.authMiddleware(h.handleStandbyAccountsExport)
@@ -264,6 +274,10 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	r.PUT("/admin/newapi/config", newapiConfigHandler)
 	r.POST("/admin/newapi/test/enable", newapiTestEnableHandler)
 	r.POST("/admin/newapi/test/disable", newapiTestDisableHandler)
+	r.GET("/admin/upstream-provider/config", upstreamProviderConfigHandler)
+	r.PUT("/admin/upstream-provider/config", upstreamProviderConfigHandler)
+	r.POST("/admin/upstream-provider/models/fetch", upstreamProviderModelsFetchHandler)
+	r.POST("/admin/upstream-provider/test", upstreamProviderTestHandler)
 	/* 备用账号池 */
 	r.GET("/admin/standby/state", standbyStateHandler)
 	r.POST("/admin/standby/accounts/ingest", standbyIngestHandler)
@@ -414,21 +428,43 @@ func (h *ProxyHandler) validateModelSuffixOptions(model string) error {
  * buildRetryConfig 返回 executor 内部重试配置（进程内缓存，字段不变时勿改 handler 相关配置）
  */
 func (h *ProxyHandler) buildRetryConfig() executor.RetryConfig {
-	h.retryCfgOnce.Do(func() { h.retryCfg = h.buildRetryConfigOnce() })
+	h.retryCfgOnce.Do(func() { h.buildRetryConfigOnce() })
 	return h.retryCfg
 }
 
+func (h *ProxyHandler) buildStandbyRetryConfig() executor.RetryConfig {
+	h.retryCfgOnce.Do(func() { h.buildRetryConfigOnce() })
+	return h.standbyRetryCfg
+}
+
 func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
-	pickFn := func(model string, excluded map[string]bool) (*auth.Account, error) {
+	primaryPickFn := func(model string, excluded map[string]bool) (*auth.Account, error) {
 		if h.standbyCtrl != nil {
-			return h.standbyCtrl.Pick(model, excluded)
+			acc, err := h.standbyCtrl.PickPrimaryOnly(model, excluded)
+			if err != nil {
+				return nil, err
+			}
+			if h.upstreamProviderService != nil {
+				h.upstreamProviderService.MarkPrimaryAvailable()
+			}
+			return acc, nil
+		}
+		acc, err := h.manager.PickExcluding(model, excluded)
+		if err != nil {
+			return nil, err
+		}
+		if h.upstreamProviderService != nil {
+			h.upstreamProviderService.MarkPrimaryAvailable()
+		}
+		return acc, nil
+	}
+	standbyPickFn := func(model string, excluded map[string]bool) (*auth.Account, error) {
+		if h.standbyCtrl != nil {
+			return h.standbyCtrl.PickStandbyOnly(model, excluded)
 		}
 		return h.manager.PickExcluding(model, excluded)
 	}
 	healthyPick := func(model string, excluded map[string]bool) (*auth.Account, error) {
-		if h.standbyCtrl != nil {
-			return h.standbyCtrl.PickRecentlySuccessful(model, excluded)
-		}
 		return h.manager.PickRecentlySuccessful(model, excluded)
 	}
 	ensureFresh := func(ctx context.Context, acc *auth.Account) bool {
@@ -446,7 +482,7 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		return h.manager
 	}
 	rc := executor.RetryConfig{
-		PickFn:             pickFn,
+		PickFn:             primaryPickFn,
 		EnsureTokenFreshFn: ensureFresh,
 		On401Fn: func(acc *auth.Account) bool {
 			/* 先换号让当前请求立即继续；对 401 账号在后台提交 OAuth+额度恢复（异步，不阻塞） */
@@ -480,9 +516,6 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		ConcurrentRetry429:        h.concurrentRetry429,
 		ConcurrentRetry429Timeout: h.concurrentRetry429Timeout,
 		PickIgnoringCooldownFn: func(model string, excluded map[string]bool) (*auth.Account, error) {
-			if h.standbyCtrl != nil {
-				return h.standbyCtrl.PickIgnoringCooldown(model, excluded)
-			}
 			return h.manager.PickIgnoringCooldown(model, excluded)
 		},
 	}
@@ -528,11 +561,35 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		rc.LastAttemptPickFn = func(_ context.Context, model string, excluded map[string]bool) (*auth.Account, error) {
 			acc, err := healthyPick(model, excluded)
 			if err != nil {
-				return pickFn(model, excluded)
+				return primaryPickFn(model, excluded)
 			}
 			return acc, nil
 		}
 	}
+	h.retryCfg = rc
+	standbyRC := rc
+	standbyRC.PickFn = standbyPickFn
+	standbyRC.HealthyPickFn = func(model string, excluded map[string]bool) (*auth.Account, error) {
+		if h.standbyCtrl != nil {
+			return h.standbyCtrl.PickStandbyRecentlySuccessful(model, excluded)
+		}
+		return standbyPickFn(model, excluded)
+	}
+	standbyRC.FallbackRecentPickFn = standbyRC.HealthyPickFn
+	standbyRC.LastAttemptPickFn = func(_ context.Context, model string, excluded map[string]bool) (*auth.Account, error) {
+		acc, err := standbyRC.HealthyPickFn(model, excluded)
+		if err != nil {
+			return standbyPickFn(model, excluded)
+		}
+		return acc, nil
+	}
+	standbyRC.PickIgnoringCooldownFn = func(model string, excluded map[string]bool) (*auth.Account, error) {
+		if h.standbyCtrl != nil {
+			return h.standbyCtrl.PickStandbyIgnoringCooldown(model, excluded)
+		}
+		return standbyPickFn(model, excluded)
+	}
+	h.standbyRetryCfg = standbyRC
 	return rc
 }
 
@@ -709,8 +766,6 @@ func (h *ProxyHandler) handleChatCompletions(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到请求: model=%s, stream=%v", model, stream)
 
-	rc := h.buildRetryConfig()
-
 	if stream {
 		/* 头与状态在 StreamWriter 外发送；Open+Pump 在 Writer 内完成，上游断连等在响应体尚无字节时可内部多轮全量重连，最后再向客户端写 SSE 错误 */
 		ctx.Response.Header.Set("Content-Type", "text/event-stream")
@@ -723,10 +778,7 @@ func (h *ProxyHandler) handleChatCompletions(ctx *fasthttp.RequestCtx) {
 			_ = w.Flush()
 			flush := func() { _ = w.Flush() }
 			sw := newStreamBufWriter(w)
-			bridges := executor.CodexStreamOpenBridgeMax(h.maxRetry)
-			execErr := h.executor.RunCodexStreamWithOpenBridges(context.Background(), rc, body, model, sw, flush, bridges, func(s *executor.CodexResponsesStream, w2 io.Writer, fl func()) error {
-				return s.PumpChatCompletion(w2, fl)
-			})
+			execErr := h.runChatStreamWithFallback(context.Background(), body, model, sw, flush)
 			if execErr != nil {
 				log.Errorf("chat stream: %v", execErr)
 				msg, typ := chatStreamPumpErrorMeta(execErr)
@@ -738,7 +790,7 @@ func (h *ProxyHandler) handleChatCompletions(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	result, execErr := h.executor.ExecuteNonStream(ctx, rc, body, model)
+	result, execErr := h.executeChatNonStreamWithFallback(ctx, body, model)
 	if execErr != nil {
 		handleExecutorError(ctx, execErr)
 		return
@@ -1087,6 +1139,9 @@ func (h *ProxyHandler) syncPrimaryAvailabilityForNewAPI() {
 		return
 	}
 	h.standbyCtrl.SyncPrimaryAvailabilityForNewAPI()
+	if h.upstreamProviderService != nil && h.manager != nil && h.manager.HasPickableAccount() {
+		h.upstreamProviderService.MarkPrimaryAvailable()
+	}
 }
 
 /**
@@ -1163,8 +1218,6 @@ func (h *ProxyHandler) handleResponses(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到 Responses 请求: model=%s, stream=%v", model, stream)
 
-	rc := h.buildRetryConfig()
-
 	if stream {
 		/* 头与状态在 StreamWriter 外发送；Open+Pump 在 Writer 内完成，connection closed 等在体尚无字节时可内部多轮全量重连 */
 		ctx.Response.Header.Set("Content-Type", "text/event-stream")
@@ -1177,10 +1230,7 @@ func (h *ProxyHandler) handleResponses(ctx *fasthttp.RequestCtx) {
 			_ = w.Flush()
 			flush := func() { _ = w.Flush() }
 			sw := newStreamBufWriter(w)
-			bridges := executor.CodexStreamOpenBridgeMax(h.maxRetry)
-			execErr := h.executor.RunCodexStreamWithOpenBridges(context.Background(), rc, body, model, sw, flush, bridges, func(s *executor.CodexResponsesStream, w2 io.Writer, fl func()) error {
-				return s.PumpRawSSE(w2, fl)
-			})
+			execErr := h.runResponsesStreamWithFallback(context.Background(), body, model, sw, flush)
 			if execErr != nil {
 				log.Errorf("responses stream: %v", execErr)
 				msg, typ := chatStreamPumpErrorMeta(execErr)
@@ -1192,7 +1242,7 @@ func (h *ProxyHandler) handleResponses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	result, execErr := h.executor.ExecuteResponsesNonStream(ctx, rc, body, model)
+	result, execErr := h.executeResponsesNonStreamWithFallback(ctx, body, model)
 	if execErr != nil {
 		handleExecutorError(ctx, execErr)
 		return
@@ -1314,8 +1364,29 @@ func (h *ProxyHandler) handleResponsesWS(ctx *fasthttp.RequestCtx) {
 				}
 
 				log.Debugf("responses ws: model=%s", model)
-				rc := h.buildRetryConfig()
-				streamErr := h.forwardResponsesSSEAsWSSession(ctx, sess, rc, requestBody, model)
+				pump := func(s *executor.CodexResponsesStream, w io.Writer, flush func()) error {
+					return h.pumpSSEToWSSession(s, sess, w, ctx)
+				}
+				primaryWriter := &fallbackCountingWriter{w: &wsNopWriter{}}
+				streamErr := h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildRetryConfig(), requestBody, model,
+					primaryWriter, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
+				if streamErr != nil && h.shouldFallbackAfterPrimary(streamErr) && primaryWriter.written == 0 {
+					if h.executor.HasProviderFallback() {
+						providerWriter := &fallbackCountingWriter{w: &wsNopWriter{}}
+						if providerErr := h.executor.RunProviderStream(ctx, requestBody, model, providerWriter, func() {}, pump); providerErr == nil {
+							streamErr = nil
+						} else if providerWriter.written > 0 {
+							streamErr = providerErr
+						} else {
+							log.Warnf("上游提供商 WS 请求失败，切换备用池: %v", providerErr)
+							streamErr = h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildStandbyRetryConfig(), requestBody, model,
+								&wsNopWriter{}, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
+						}
+					} else {
+						streamErr = h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildStandbyRetryConfig(), requestBody, model,
+							&wsNopWriter{}, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
+					}
+				}
 				if streamErr == nil {
 					RecordRequest()
 				} else if errors.Is(streamErr, executor.ErrEmptyResponse) {
@@ -1344,7 +1415,6 @@ func (h *ProxyHandler) handleResponsesWS(ctx *fasthttp.RequestCtx) {
 
 func (h *ProxyHandler) forwardResponsesSSEAsWSSession(ctx context.Context, sess *wsSession, rc executor.RetryConfig, requestBody []byte, model string) error {
 	bridges := executor.CodexStreamOpenBridgeMax(h.maxRetry)
-	/* wsNopWriter 仅负责计数，实际 WS 写入在 pump 内完成 */
 	return h.executor.RunCodexStreamWithOpenBridges(ctx, rc, requestBody, model,
 		&wsNopWriter{}, func() {}, bridges,
 		func(s *executor.CodexResponsesStream, w io.Writer, flush func()) error {
@@ -1431,7 +1501,9 @@ func (h *ProxyHandler) pumpSSEToWSSession(s *executor.CodexResponsesStream, sess
 	if !hasContent {
 		return executor.ErrEmptyResponse
 	}
-	s.Account().RecordSuccess()
+	if acc := s.Account(); acc != nil {
+		acc.RecordSuccess()
+	}
 	return nil
 }
 

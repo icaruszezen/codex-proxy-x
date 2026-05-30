@@ -36,7 +36,7 @@ func (h *ProxyHandler) handleImageGenerations(ctx *fasthttp.RequestCtx) {
 
 	log.Debugf("收到 Images Generations 请求: model=%s upstream_model=%s output_format=%s", params.RequestModel, params.ExecutorModel, params.OutputFormat)
 
-	result, execErr := h.executor.ExecuteResponsesNonStream(ctx, h.buildRetryConfig(), requestBody, params.ExecutorModel)
+	result, execErr := h.executeResponsesNonStreamWithFallback(ctx, requestBody, params.ExecutorModel)
 	if execErr != nil {
 		handleExecutorError(ctx, execErr)
 		return

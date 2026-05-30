@@ -154,11 +154,7 @@ func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, rc executor
 	ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
 		sw := newStreamBufWriter(w)
 		flush := func() { _ = w.Flush() }
-		bridges := executor.CodexStreamOpenBridgeMax(h.maxRetry)
-		execErr := h.executor.RunCodexStreamWithOpenBridges(context.Background(), rc, openaiBody, model, sw, flush, bridges, func(s *executor.CodexResponsesStream, w2 io.Writer, fl func()) error {
-			return pumpClaudeCodexSSE(s, w2, fl, model, h.debugUpstreamStream)
-		})
-		if execErr != nil {
+		if execErr := h.runClaudeStreamWithFallback(context.Background(), openaiBody, model, sw, flush); execErr != nil {
 			log.Errorf("Claude stream: %v", execErr)
 			msg := execErr.Error()
 			if errors.Is(execErr, executor.ErrEmptyResponse) {
@@ -188,6 +184,19 @@ func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, rc executor
  */
 func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, rc executor.RetryConfig, openaiBody []byte, model string) error {
 	collected, err := h.executor.CollectCodexResponsesSSE(ctx, rc, openaiBody, model)
+	if err != nil && h.shouldFallbackAfterPrimary(err) {
+		if h.executor.HasProviderFallback() {
+			if providerCollected, providerErr := h.executor.CollectProviderResponsesSSE(ctx, openaiBody, model); providerErr == nil {
+				collected = providerCollected
+				err = nil
+			} else {
+				log.Warnf("上游提供商 Claude 非流式请求失败，切换备用池: %v", providerErr)
+				collected, err = h.executor.CollectCodexResponsesSSE(ctx, h.buildStandbyRetryConfig(), openaiBody, model)
+			}
+		} else {
+			collected, err = h.executor.CollectCodexResponsesSSE(ctx, h.buildStandbyRetryConfig(), openaiBody, model)
+		}
+	}
 	if err != nil {
 		return err
 	}
