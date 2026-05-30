@@ -1643,8 +1643,12 @@ func upstreamPrefixIndicatesUsageQuotaExceeded(prefix []byte) bool {
 }
 
 /**
- * shouldSwitchAccountForUpstreamError 是否应在 sendWithRetry 中换号重试（含 400/403+额度 JSON 与常规 429/5xx）。
+ * ShouldSwitchAccountForUpstreamError 判断某个上游状态码和响应体是否应允许切换账号或供应商重试。
  */
+func ShouldSwitchAccountForUpstreamError(code int, body []byte) bool {
+	return shouldSwitchAccountForUpstreamError(code, body)
+}
+
 func shouldSwitchAccountForUpstreamError(code int, body []byte) bool {
 	if isCodexUsageQuotaExceededJSON(codexQuotaPayloadForCooldown(body)) {
 		switch code {

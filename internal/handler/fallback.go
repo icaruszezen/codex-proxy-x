@@ -23,17 +23,18 @@ func (h *ProxyHandler) executeChatNonStreamWithFallback(ctx context.Context, bod
 	if err == nil {
 		return result, nil
 	}
-	if !h.shouldFallbackAfterPrimary(err) {
+	if !h.shouldTryProviderAfterPrimary(err) {
 		return nil, err
 	}
-	if h.executor.HasProviderFallback() {
-		if result, providerErr := h.executor.ExecuteProviderNonStream(ctx, body, model); providerErr == nil {
-			return result, nil
-		} else {
-			log.Warnf("上游提供商请求失败，切换备用池: %v", providerErr)
-		}
+	if !h.executor.HasProviderFallback() {
+		return nil, err
 	}
-	return h.executor.ExecuteNonStream(ctx, h.buildStandbyRetryConfig(), body, model)
+	result, providerErr := h.executor.ExecuteProviderNonStream(ctx, body, model)
+	if providerErr == nil {
+		return result, nil
+	}
+	log.Warnf("上游提供商请求失败: %v", providerErr)
+	return nil, providerErr
 }
 
 func (h *ProxyHandler) executeResponsesNonStreamWithFallback(ctx context.Context, body []byte, model string) ([]byte, error) {
@@ -41,17 +42,18 @@ func (h *ProxyHandler) executeResponsesNonStreamWithFallback(ctx context.Context
 	if err == nil {
 		return result, nil
 	}
-	if !h.shouldFallbackAfterPrimary(err) {
+	if !h.shouldTryProviderAfterPrimary(err) {
 		return nil, err
 	}
-	if h.executor.HasProviderFallback() {
-		if result, providerErr := h.executor.ExecuteProviderResponsesNonStream(ctx, body, model); providerErr == nil {
-			return result, nil
-		} else {
-			log.Warnf("上游提供商 Responses 请求失败，切换备用池: %v", providerErr)
-		}
+	if !h.executor.HasProviderFallback() {
+		return nil, err
 	}
-	return h.executor.ExecuteResponsesNonStream(ctx, h.buildStandbyRetryConfig(), body, model)
+	result, providerErr := h.executor.ExecuteProviderResponsesNonStream(ctx, body, model)
+	if providerErr == nil {
+		return result, nil
+	}
+	log.Warnf("上游提供商 Responses 请求失败: %v", providerErr)
+	return nil, providerErr
 }
 
 func (h *ProxyHandler) runChatStreamWithFallback(ctx context.Context, body []byte, model string, w io.Writer, flush func()) error {
@@ -71,24 +73,22 @@ func (h *ProxyHandler) runCodexStreamWithFallback(ctx context.Context, body []by
 	pump := h.streamPumpForMode(mode, model)
 	primaryWriter := &fallbackCountingWriter{w: w}
 	err := h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildRetryConfig(), body, model, primaryWriter, flush, bridges, pump)
-	if err == nil || !h.shouldFallbackAfterPrimary(err) {
+	if err == nil || !h.shouldTryProviderAfterPrimary(err) {
 		return err
 	}
 	if primaryWriter.written > 0 {
 		return err
 	}
-	if h.executor.HasProviderFallback() {
-		providerWriter := &fallbackCountingWriter{w: w}
-		providerErr := h.executor.RunProviderStream(ctx, body, model, providerWriter, flush, pump)
-		if providerErr == nil {
-			return nil
-		}
-		if providerWriter.written > 0 {
-			return providerErr
-		}
-		log.Warnf("上游提供商流式请求失败，切换备用池: %v", providerErr)
+	if !h.executor.HasProviderFallback() {
+		return err
 	}
-	return h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildStandbyRetryConfig(), body, model, w, flush, bridges, pump)
+	providerWriter := &fallbackCountingWriter{w: w}
+	providerErr := h.executor.RunProviderStream(ctx, body, model, providerWriter, flush, pump)
+	if providerErr == nil {
+		return nil
+	}
+	log.Warnf("上游提供商流式请求失败: %v", providerErr)
+	return providerErr
 }
 
 type fallbackCountingWriter struct {
@@ -121,18 +121,15 @@ func (h *ProxyHandler) streamPumpForMode(mode requestExecutorMode, model string)
 	}
 }
 
-func (h *ProxyHandler) shouldFallbackAfterPrimary(err error) bool {
+func (h *ProxyHandler) shouldTryProviderAfterPrimary(err error) bool {
 	if err == nil || h == nil || h.executor == nil {
-		return false
-	}
-	if h.manager != nil && h.manager.HasPickableAccount() {
 		return false
 	}
 	if errors.Is(err, executor.ErrProviderUnavailable) {
 		return false
 	}
 	if statusErr, ok := err.(*executor.StatusError); ok {
-		return executor.IsRetryableStatus(statusErr.Code)
+		return executor.ShouldSwitchAccountForUpstreamError(statusErr.Code, statusErr.Body)
 	}
 	return true
 }

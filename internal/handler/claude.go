@@ -184,17 +184,16 @@ func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, rc executor
  */
 func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, rc executor.RetryConfig, openaiBody []byte, model string) error {
 	collected, err := h.executor.CollectCodexResponsesSSE(ctx, rc, openaiBody, model)
-	if err != nil && h.shouldFallbackAfterPrimary(err) {
+	if err != nil && h.shouldTryProviderAfterPrimary(err) {
 		if h.executor.HasProviderFallback() {
-			if providerCollected, providerErr := h.executor.CollectProviderResponsesSSE(ctx, openaiBody, model); providerErr == nil {
+			providerCollected, providerErr := h.executor.CollectProviderResponsesSSE(ctx, openaiBody, model)
+			if providerErr == nil {
 				collected = providerCollected
 				err = nil
 			} else {
-				log.Warnf("上游提供商 Claude 非流式请求失败，切换备用池: %v", providerErr)
-				collected, err = h.executor.CollectCodexResponsesSSE(ctx, h.buildStandbyRetryConfig(), openaiBody, model)
+				log.Warnf("上游提供商 Claude 非流式请求失败: %v", providerErr)
+				err = providerErr
 			}
-		} else {
-			collected, err = h.executor.CollectCodexResponsesSSE(ctx, h.buildStandbyRetryConfig(), openaiBody, model)
 		}
 	}
 	if err != nil {

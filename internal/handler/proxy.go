@@ -1370,21 +1370,15 @@ func (h *ProxyHandler) handleResponsesWS(ctx *fasthttp.RequestCtx) {
 				primaryWriter := &fallbackCountingWriter{w: &wsNopWriter{}}
 				streamErr := h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildRetryConfig(), requestBody, model,
 					primaryWriter, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
-				if streamErr != nil && h.shouldFallbackAfterPrimary(streamErr) && primaryWriter.written == 0 {
+				if streamErr != nil && h.shouldTryProviderAfterPrimary(streamErr) && primaryWriter.written == 0 {
 					if h.executor.HasProviderFallback() {
 						providerWriter := &fallbackCountingWriter{w: &wsNopWriter{}}
 						if providerErr := h.executor.RunProviderStream(ctx, requestBody, model, providerWriter, func() {}, pump); providerErr == nil {
 							streamErr = nil
-						} else if providerWriter.written > 0 {
-							streamErr = providerErr
 						} else {
-							log.Warnf("上游提供商 WS 请求失败，切换备用池: %v", providerErr)
-							streamErr = h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildStandbyRetryConfig(), requestBody, model,
-								&wsNopWriter{}, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
+							log.Warnf("上游提供商 WS 请求失败: %v", providerErr)
+							streamErr = providerErr
 						}
-					} else {
-						streamErr = h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildStandbyRetryConfig(), requestBody, model,
-							&wsNopWriter{}, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
 					}
 				}
 				if streamErr == nil {
