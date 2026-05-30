@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.15.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.15.0...v1.15.1) (2026-05-26)
+
+
+### 📦 依赖更新
+
+* **go:** bump github.com/tidwall/gjson ([c5a54d7](https://github.com/icaruszezen/codex-proxy-x/commit/c5a54d7d9c782ddd4529df97426523f27de28915))
+* **go:** bump golang.org/x/net ([cc6f52b](https://github.com/icaruszezen/codex-proxy-x/commit/cc6f52b077ffb83fc68e38931c0e548504cf6ac7))
+
 ## [1.15.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.14.1...v1.15.0) (2026-05-21)
 
 
