@@ -349,15 +349,6 @@ type modelListEntry struct {
 }
 
 var modelList = []modelListEntry{
-	{base: "gpt-5", suffixes: []string{"low", "medium", "high", "auto"}},
-	{base: "gpt-5-codex", suffixes: []string{"low", "medium", "high", "auto"}},
-	{base: "gpt-5-codex-mini", suffixes: []string{"low", "medium", "high", "auto"}},
-	{base: "gpt-5.1", suffixes: []string{"low", "medium", "high", "none", "auto"}},
-	{base: "gpt-5.1-codex", suffixes: []string{"low", "medium", "high", "max", "auto"}},
-	{base: "gpt-5.1-codex-mini", suffixes: []string{"low", "medium", "high", "auto"}},
-	{base: "gpt-5.1-codex-max", suffixes: []string{"low", "medium", "high", "xhigh", "auto"}},
-	{base: "gpt-5.2", suffixes: []string{"low", "medium", "high", "xhigh", "none", "auto"}},
-	{base: "gpt-5.2-codex", suffixes: []string{"low", "medium", "high", "xhigh", "auto"}},
 	{base: "gpt-5.3-codex", suffixes: []string{"low", "medium", "high", "xhigh", "none", "auto"}},
 	{base: "gpt-5.4", suffixes: []string{"low", "medium", "high", "xhigh", "none", "auto"}},
 	{base: "gpt-5.4-mini", suffixes: []string{"low", "medium", "high", "xhigh", "none", "auto"}},
