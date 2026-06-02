@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.2](https://github.com/icaruszezen/codex-proxy-x/compare/v1.17.1...v1.17.2) (2026-06-02)
+
+
+### ♻️ 代码重构
+
+* enhance standby controller logic to improve primary account handling and retry configuration ([5f6b252](https://github.com/icaruszezen/codex-proxy-x/commit/5f6b2529c5f3a7ee20ac125da2b14cf357bc3854))
+
 ## [1.17.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.17.0...v1.17.1) (2026-06-02)
 
 
