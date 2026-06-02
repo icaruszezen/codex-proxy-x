@@ -450,7 +450,7 @@ func (h *ProxyHandler) buildStandbyRetryConfig() executor.RetryConfig {
 func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 	primaryPickFn := func(model string, excluded map[string]bool) (*auth.Account, error) {
 		if h.standbyCtrl != nil {
-			acc, err := h.standbyCtrl.PickPrimaryOnly(model, excluded)
+			acc, err := h.standbyCtrl.Pick(model, excluded)
 			if err != nil {
 				return nil, err
 			}
@@ -475,6 +475,9 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		return h.manager.PickExcluding(model, excluded)
 	}
 	healthyPick := func(model string, excluded map[string]bool) (*auth.Account, error) {
+		if h.standbyCtrl != nil {
+			return h.standbyCtrl.PickRecentlySuccessful(model, excluded)
+		}
 		return h.manager.PickRecentlySuccessful(model, excluded)
 	}
 	ensureFresh := func(ctx context.Context, acc *auth.Account) bool {
@@ -526,6 +529,9 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		ConcurrentRetry429:        h.concurrentRetry429,
 		ConcurrentRetry429Timeout: h.concurrentRetry429Timeout,
 		PickIgnoringCooldownFn: func(model string, excluded map[string]bool) (*auth.Account, error) {
+			if h.standbyCtrl != nil {
+				return h.standbyCtrl.PickIgnoringCooldown(model, excluded)
+			}
 			return h.manager.PickIgnoringCooldown(model, excluded)
 		},
 	}
@@ -579,19 +585,22 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 	h.retryCfg = rc
 	standbyRC := rc
 	standbyRC.PickFn = standbyPickFn
-	standbyRC.HealthyPickFn = func(model string, excluded map[string]bool) (*auth.Account, error) {
-		if h.standbyCtrl != nil {
-			return h.standbyCtrl.PickStandbyRecentlySuccessful(model, excluded)
-		}
-		return standbyPickFn(model, excluded)
-	}
-	standbyRC.FallbackRecentPickFn = standbyRC.HealthyPickFn
-	standbyRC.LastAttemptPickFn = func(_ context.Context, model string, excluded map[string]bool) (*auth.Account, error) {
-		acc, err := standbyRC.HealthyPickFn(model, excluded)
-		if err != nil {
+	if h.enableHealthyRetry {
+		standbyHealthyPick := func(model string, excluded map[string]bool) (*auth.Account, error) {
+			if h.standbyCtrl != nil {
+				return h.standbyCtrl.PickStandbyRecentlySuccessful(model, excluded)
+			}
 			return standbyPickFn(model, excluded)
 		}
-		return acc, nil
+		standbyRC.HealthyPickFn = standbyHealthyPick
+		standbyRC.FallbackRecentPickFn = standbyHealthyPick
+		standbyRC.LastAttemptPickFn = func(_ context.Context, model string, excluded map[string]bool) (*auth.Account, error) {
+			acc, err := standbyHealthyPick(model, excluded)
+			if err != nil {
+				return standbyPickFn(model, excluded)
+			}
+			return acc, nil
+		}
 	}
 	standbyRC.PickIgnoringCooldownFn = func(model string, excluded map[string]bool) (*auth.Account, error) {
 		if h.standbyCtrl != nil {

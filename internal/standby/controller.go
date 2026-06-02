@@ -3,8 +3,8 @@
  *
  * 在主 Manager 与备用 Manager 之间做选号路由：
  *   1. 每次选号先尝试主池，主池可选 → 顺便停用备用模式；
- *   2. 主池无可选账号且备用池有可用账号 → CAS 激活备用模式 + qmsg 通知 + 启动备用池 Token 刷新；
- *   3. 主池一旦再能选号 → CAS 停用备用模式 + qmsg 通知 + 取消备用池 Token 刷新。
+ *   2. 主池无可选账号且备用池有可用账号 → CAS 激活备用模式 + qmsg 通知 + 启动备用池 Token 刷新和额度冷却复查；
+ *   3. 主池一旦再能选号 → CAS 停用备用模式 + qmsg 通知 + 取消备用池激活期后台任务。
  *
  * 未激活时备用池实例 *不会* 被周期性刷新/健康检查触发，账号保持"纯净"。
  */
@@ -31,7 +31,7 @@ import (
  * @field quotaChecker - 额度检查器（用于 Manager 内部 401/429 恢复链路）
  * @field qmsgService - qmsg 通知服务（激活/停用通知）
  * @field active - 是否处于备用模式（true=正在使用备用池）
- * @field refreshCancel - 备用池 Token 刷新 goroutine 的 cancel；停用时调用以退出
+ * @field activeCancel - 备用池激活期后台任务的 cancel；停用时调用以退出
  * @field rootCtx - 父 context；激活生命周期均派生自此
  */
 type Controller struct {
@@ -41,11 +41,11 @@ type Controller struct {
 	qmsgService   *notify.Service
 	newapiService *notify.NewAPIService
 
-	active        atomic.Bool
-	primaryDown   atomic.Bool
-	refreshMu     sync.Mutex
-	refreshCancel context.CancelFunc
-	rootCtx       atomic.Pointer[context.Context]
+	active       atomic.Bool
+	primaryDown  atomic.Bool
+	activeMu     sync.Mutex
+	activeCancel context.CancelFunc
+	rootCtx      atomic.Pointer[context.Context]
 }
 
 /**
@@ -199,6 +199,15 @@ func (c *Controller) PickStandbyOnly(model string, excluded map[string]bool) (*a
 	if c == nil || c.standby == nil || c.standby.AccountCount() == 0 {
 		return nil, fmt.Errorf("备用账号池无可用账号")
 	}
+	if c.primary != nil {
+		if acc, err := c.primary.PickExcluding(model, excluded); err == nil {
+			c.markPrimaryAvailableForNewAPI()
+			c.deactivateIfActive()
+			return acc, nil
+		} else {
+			c.markPrimaryUnavailableForNewAPI()
+		}
+	}
 	acc, err := c.standby.PickExcluding(model, excluded)
 	if err != nil {
 		return nil, err
@@ -211,6 +220,15 @@ func (c *Controller) PickStandbyRecentlySuccessful(model string, excluded map[st
 	if c == nil || c.standby == nil || c.standby.AccountCount() == 0 {
 		return nil, fmt.Errorf("备用账号池无可用账号")
 	}
+	if c.primary != nil {
+		if acc, err := c.primary.PickRecentlySuccessful(model, excluded); err == nil {
+			c.markPrimaryAvailableForNewAPI()
+			c.deactivateIfActive()
+			return acc, nil
+		} else {
+			c.markPrimaryUnavailableForNewAPI()
+		}
+	}
 	acc, err := c.standby.PickRecentlySuccessful(model, excluded)
 	if err != nil {
 		return nil, err
@@ -222,6 +240,15 @@ func (c *Controller) PickStandbyRecentlySuccessful(model string, excluded map[st
 func (c *Controller) PickStandbyIgnoringCooldown(model string, excluded map[string]bool) (*auth.Account, error) {
 	if c == nil || c.standby == nil || c.standby.AccountCount() == 0 {
 		return nil, fmt.Errorf("备用账号池无可用账号")
+	}
+	if c.primary != nil {
+		if acc, err := c.primary.PickIgnoringCooldown(model, excluded); err == nil {
+			c.markPrimaryAvailableForNewAPI()
+			c.deactivateIfActive()
+			return acc, nil
+		} else {
+			c.markPrimaryUnavailableForNewAPI()
+		}
 	}
 	acc, err := c.standby.PickIgnoringCooldown(model, excluded)
 	if err != nil {
@@ -312,7 +339,7 @@ func (c *Controller) Snapshot() StateSnapshot {
 }
 
 /**
- * activateIfNeeded CAS 激活备用模式：发 qmsg 通知，启动备用池 Token 刷新 goroutine
+ * activateIfNeeded CAS 激活备用模式：发 qmsg 通知，启动备用池激活期后台任务
  * 重复激活无副作用（CAS 失败直接返回）
  */
 func (c *Controller) activateIfNeeded() {
@@ -325,27 +352,33 @@ func (c *Controller) activateIfNeeded() {
 	}
 	log.Warnf("备用账号池已启用: 主池无可用账号，已切换至备用池（%d 个账号）", standbyTotal)
 
-	c.refreshMu.Lock()
-	if c.refreshCancel == nil && c.standby != nil {
+	c.activeMu.Lock()
+	if c.activeCancel == nil && c.standby != nil {
 		rootPtr := c.rootCtx.Load()
 		root := context.Background()
 		if rootPtr != nil {
 			root = *rootPtr
 		}
 		ctx, cancel := context.WithCancel(root)
-		c.refreshCancel = cancel
+		c.activeCancel = cancel
 		go func() {
 			defer log.Info("备用账号池 Token 刷新循环已退出")
 			c.standby.StartRefreshLoop(ctx)
 		}()
+		if c.quotaChecker != nil {
+			go func() {
+				defer log.Info("备用账号池额度冷却复查循环已退出")
+				c.standby.StartQuotaCooldownRecheckLoop(ctx, c.quotaChecker)
+			}()
+		}
 	}
-	c.refreshMu.Unlock()
+	c.activeMu.Unlock()
 
 	c.sendQmsg("[备用账号池] 主池已无可用账号，已自动启用备用账号池（%d 个账号）", standbyTotal)
 }
 
 /**
- * deactivateIfActive CAS 停用备用模式：发 qmsg 通知，取消备用池刷新 goroutine
+ * deactivateIfActive CAS 停用备用模式：发 qmsg 通知，取消备用池激活期后台任务
  */
 func (c *Controller) deactivateIfActive() {
 	if !c.active.CompareAndSwap(true, false) {
@@ -357,12 +390,12 @@ func (c *Controller) deactivateIfActive() {
 	}
 	log.Infof("备用账号池已停用: 主池已恢复（%d 个账号）", primaryTotal)
 
-	c.refreshMu.Lock()
-	if c.refreshCancel != nil {
-		c.refreshCancel()
-		c.refreshCancel = nil
+	c.activeMu.Lock()
+	if c.activeCancel != nil {
+		c.activeCancel()
+		c.activeCancel = nil
 	}
-	c.refreshMu.Unlock()
+	c.activeMu.Unlock()
 
 	c.sendQmsg("[备用账号池] 主账号池已恢复，已自动停用备用账号池（主池当前 %d 个账号）", primaryTotal)
 }
