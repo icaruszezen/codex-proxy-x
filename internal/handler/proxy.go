@@ -1428,14 +1428,34 @@ func (h *ProxyHandler) handleResponsesWS(ctx *fasthttp.RequestCtx) {
 				primaryWriter := &fallbackCountingWriter{w: &wsNopWriter{}}
 				streamErr := h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildRetryConfig(), requestBody, model,
 					primaryWriter, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
-				if streamErr != nil && h.shouldTryProviderAfterPrimary(streamErr) && primaryWriter.written == 0 {
+				if streamErr != nil && h.shouldTryStandbyAfterPrimary(streamErr) && primaryWriter.written == 0 {
+					lastErr := streamErr
 					if h.executor.HasProviderFallback() {
+						recordFallbackToProvider(ctx, streamErr)
 						providerWriter := &fallbackCountingWriter{w: &wsNopWriter{}}
-						if providerErr := h.executor.RunProviderStream(ctx, requestBody, model, providerWriter, func() {}, pump); providerErr == nil {
+						providerErr := h.executor.RunProviderStream(ctx, requestBody, model, providerWriter, func() {}, pump)
+						if providerErr == nil {
 							streamErr = nil
+						} else if providerWriter.written > 0 {
+							streamErr = providerErr
 						} else {
 							log.Warnf("上游提供商 WS 请求失败: %v", providerErr)
-							streamErr = providerErr
+							lastErr = providerErr
+						}
+					}
+					if streamErr != nil {
+						if h.hasStandbyFallback() {
+							recordFallbackToStandby(ctx, lastErr)
+							standbyWriter := &fallbackCountingWriter{w: &wsNopWriter{}}
+							standbyErr := h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildStandbyRetryConfig(), requestBody, model,
+								standbyWriter, func() {}, executor.CodexStreamOpenBridgeMax(h.maxRetry), pump)
+							if standbyErr == nil {
+								streamErr = nil
+							} else {
+								streamErr = standbyErr
+							}
+						} else if h.executor.HasProviderFallback() {
+							streamErr = lastErr
 						}
 					}
 				}

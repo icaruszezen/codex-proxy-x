@@ -90,3 +90,16 @@ func recordFallbackToProvider(ctx context.Context, primaryErr error) {
 		Note:  note,
 	})
 }
+
+func recordFallbackToStandby(ctx context.Context, priorErr error) {
+	collector := apidebug.FromContext(ctx)
+	if collector == nil || priorErr == nil {
+		return
+	}
+	note := priorErr.Error()
+	collector.AddStep(apidebug.StepInput{
+		Name:  "fallback_to_standby",
+		Phase: apidebug.PhaseInfo,
+		Note:  note,
+	})
+}

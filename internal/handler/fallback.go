@@ -23,19 +23,28 @@ func (h *ProxyHandler) executeChatNonStreamWithFallback(ctx context.Context, bod
 	if err == nil {
 		return result, nil
 	}
-	if !h.shouldTryProviderAfterPrimary(err) {
+	if !h.shouldTryStandbyAfterPrimary(err) {
 		return nil, err
 	}
-	if !h.executor.HasProviderFallback() {
-		return nil, err
+	lastErr := err
+	if h.executor.HasProviderFallback() {
+		recordFallbackToProvider(ctx, err)
+		result, providerErr := h.executor.ExecuteProviderNonStream(ctx, body, model)
+		if providerErr == nil {
+			return result, nil
+		}
+		log.Warnf("上游提供商请求失败: %v", providerErr)
+		lastErr = providerErr
 	}
-	recordFallbackToProvider(ctx, err)
-	result, providerErr := h.executor.ExecuteProviderNonStream(ctx, body, model)
-	if providerErr == nil {
+	if !h.hasStandbyFallback() {
+		return nil, lastErr
+	}
+	recordFallbackToStandby(ctx, lastErr)
+	result, standbyErr := h.executor.ExecuteNonStream(ctx, h.buildStandbyRetryConfig(), body, model)
+	if standbyErr == nil {
 		return result, nil
 	}
-	log.Warnf("上游提供商请求失败: %v", providerErr)
-	return nil, providerErr
+	return nil, standbyErr
 }
 
 func (h *ProxyHandler) executeResponsesNonStreamWithFallback(ctx context.Context, body []byte, model string) ([]byte, error) {
@@ -43,19 +52,28 @@ func (h *ProxyHandler) executeResponsesNonStreamWithFallback(ctx context.Context
 	if err == nil {
 		return result, nil
 	}
-	if !h.shouldTryProviderAfterPrimary(err) {
+	if !h.shouldTryStandbyAfterPrimary(err) {
 		return nil, err
 	}
-	if !h.executor.HasProviderFallback() {
-		return nil, err
+	lastErr := err
+	if h.executor.HasProviderFallback() {
+		recordFallbackToProvider(ctx, err)
+		result, providerErr := h.executor.ExecuteProviderResponsesNonStream(ctx, body, model)
+		if providerErr == nil {
+			return result, nil
+		}
+		log.Warnf("上游提供商 Responses 请求失败: %v", providerErr)
+		lastErr = providerErr
 	}
-	recordFallbackToProvider(ctx, err)
-	result, providerErr := h.executor.ExecuteProviderResponsesNonStream(ctx, body, model)
-	if providerErr == nil {
+	if !h.hasStandbyFallback() {
+		return nil, lastErr
+	}
+	recordFallbackToStandby(ctx, lastErr)
+	result, standbyErr := h.executor.ExecuteResponsesNonStream(ctx, h.buildStandbyRetryConfig(), body, model)
+	if standbyErr == nil {
 		return result, nil
 	}
-	log.Warnf("上游提供商 Responses 请求失败: %v", providerErr)
-	return nil, providerErr
+	return nil, standbyErr
 }
 
 func (h *ProxyHandler) runChatStreamWithFallback(ctx context.Context, body []byte, model string, w io.Writer, flush func()) error {
@@ -75,23 +93,36 @@ func (h *ProxyHandler) runCodexStreamWithFallback(ctx context.Context, body []by
 	pump := h.streamPumpForMode(mode, model)
 	primaryWriter := &fallbackCountingWriter{w: w}
 	err := h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildRetryConfig(), body, model, primaryWriter, flush, bridges, pump)
-	if err == nil || !h.shouldTryProviderAfterPrimary(err) {
-		return err
-	}
-	if primaryWriter.written > 0 {
-		return err
-	}
-	if !h.executor.HasProviderFallback() {
-		return err
-	}
-	recordFallbackToProvider(ctx, err)
-	providerWriter := &fallbackCountingWriter{w: w}
-	providerErr := h.executor.RunProviderStream(ctx, body, model, providerWriter, flush, pump)
-	if providerErr == nil {
+	if err == nil {
 		return nil
 	}
-	log.Warnf("上游提供商流式请求失败: %v", providerErr)
-	return providerErr
+	if !h.shouldTryStandbyAfterPrimary(err) || primaryWriter.written > 0 {
+		return err
+	}
+	lastErr := err
+	if h.executor.HasProviderFallback() {
+		recordFallbackToProvider(ctx, err)
+		providerWriter := &fallbackCountingWriter{w: w}
+		providerErr := h.executor.RunProviderStream(ctx, body, model, providerWriter, flush, pump)
+		if providerErr == nil {
+			return nil
+		}
+		if providerWriter.written > 0 {
+			return providerErr
+		}
+		log.Warnf("上游提供商流式请求失败: %v", providerErr)
+		lastErr = providerErr
+	}
+	if !h.hasStandbyFallback() {
+		return lastErr
+	}
+	recordFallbackToStandby(ctx, lastErr)
+	standbyWriter := &fallbackCountingWriter{w: w}
+	standbyErr := h.executor.RunCodexStreamWithOpenBridges(ctx, h.buildStandbyRetryConfig(), body, model, standbyWriter, flush, bridges, pump)
+	if standbyErr == nil {
+		return nil
+	}
+	return standbyErr
 }
 
 type fallbackCountingWriter struct {
@@ -122,6 +153,18 @@ func (h *ProxyHandler) streamPumpForMode(mode requestExecutorMode, model string)
 			return s.PumpChatCompletion(w, fl)
 		}
 	}
+}
+
+func (h *ProxyHandler) hasStandbyFallback() bool {
+	if h == nil || h.standbyCtrl == nil {
+		return false
+	}
+	standby := h.standbyCtrl.Standby()
+	return standby != nil && standby.AccountCount() > 0
+}
+
+func (h *ProxyHandler) shouldTryStandbyAfterPrimary(err error) bool {
+	return h.shouldTryProviderAfterPrimary(err)
 }
 
 func (h *ProxyHandler) shouldTryProviderAfterPrimary(err error) bool {

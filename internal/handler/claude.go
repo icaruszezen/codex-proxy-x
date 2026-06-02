@@ -214,7 +214,8 @@ func (h *ProxyHandler) executeClaudeStream(ctx *fasthttp.RequestCtx, traceSess *
  */
 func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, traceSess *apiTraceSession, traceCtx context.Context, rc executor.RetryConfig, openaiBody []byte, model string) error {
 	collected, err := h.executor.CollectCodexResponsesSSE(traceCtx, rc, openaiBody, model)
-	if err != nil && h.shouldTryProviderAfterPrimary(err) {
+	if err != nil && h.shouldTryStandbyAfterPrimary(err) {
+		lastErr := err
 		if h.executor.HasProviderFallback() {
 			recordFallbackToProvider(traceCtx, err)
 			providerCollected, providerErr := h.executor.CollectProviderResponsesSSE(traceCtx, openaiBody, model)
@@ -223,8 +224,20 @@ func (h *ProxyHandler) executeClaudeNonStream(ctx *fasthttp.RequestCtx, traceSes
 				err = nil
 			} else {
 				log.Warnf("上游提供商 Claude 非流式请求失败: %v", providerErr)
-				err = providerErr
+				lastErr = providerErr
 			}
+		}
+		if err != nil {
+			if !h.hasStandbyFallback() {
+				return lastErr
+			}
+			recordFallbackToStandby(traceCtx, lastErr)
+			standbyCollected, standbyErr := h.executor.CollectCodexResponsesSSE(traceCtx, h.buildStandbyRetryConfig(), openaiBody, model)
+			if standbyErr != nil {
+				return standbyErr
+			}
+			collected = standbyCollected
+			err = nil
 		}
 	}
 	if err != nil {
