@@ -13,6 +13,10 @@ auth-dir: "./auths"
 # DB 模式下，备用池账号在同一张表中以 is_standby=1 列区分。
 # standby-auth-dir: "./auths-standby"
 
+# 备用账号池模型开关：开启后，仅实际使用备用账号池账号发送到上游的请求会把 model 改为 gpt-5.5，其他请求字段保持不变。
+# 主账号池与上游 provider fallback 不受影响。
+# standby-force-gpt55-enabled: false
+
 # 使用数据库存储账号（db-driver: postgres | mysql | sqlite）
 # db-enabled: true
 # db-driver: postgres

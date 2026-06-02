@@ -21,6 +21,8 @@
 | 配置项                                       | 默认值                    | 说明                                                         |
 | ----------------------------------------- | ---------------------- | ---------------------------------------------------------- |
 | `auth-dir`                                | `./auths`              | 账号 JSON 目录（`db-enabled: false` 时有效）。                       |
+| `standby-auth-dir`                        | `<auth-dir>-standby`   | 备用账号池 JSON 目录；DB 模式下通过 `is_standby` 区分。备用池仅在主池无可选号时自动启用。 |
+| `standby-force-gpt55-enabled`             | `false`                | 备用池专用模型开关；开启后，仅实际使用备用账号池账号发送到上游的请求会把 `model` 改为 `gpt-5.5`，其他字段不变，不影响主池。 |
 | `db-enabled`                              | `false`                | 为 `true` 时从数据库读账号。                                         |
 | `db-driver`                               | `postgres`             | `postgres` | `mysql` | `sqlite`（别名 `pg`、`sqlite3` 等会被规范化）。 |
 | `db-host`                                 | `127.0.0.1`            | 数据库主机（Compose 内填服务名）。                                      |

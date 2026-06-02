@@ -32,19 +32,21 @@ const DefaultDisabledRecoveryIntervalSec = 3600
  * @field APIKeys - 可选的 API 访问密钥，用于保护代理服务
  */
 type Config struct {
-	Listen     string `yaml:"listen"`
-	AuthDir    string `yaml:"auth-dir"`
+	Listen  string `yaml:"listen"`
+	AuthDir string `yaml:"auth-dir"`
 	/* StandbyAuthDir 备用账号池目录；留空则默认为 <auth-dir>-standby（同级目录，避免落入主池扫描范围） */
 	StandbyAuthDir string `yaml:"standby-auth-dir"`
-	DBEnabled  bool   `yaml:"db-enabled"`
-	DBDriver   string `yaml:"db-driver"`
-	DBHost     string `yaml:"db-host"`
-	DBPort     int    `yaml:"db-port"`
-	DBUser     string `yaml:"db-user"`
-	DBPassword string `yaml:"db-password"`
-	DBName     string `yaml:"db-name"`
-	DBSSLMode  string `yaml:"db-sslmode"`
-	DBDSN      string `yaml:"db-dsn"`
+	/* StandbyForceGPT55Enabled 为 true 时，仅备用账号池实际发送到上游的请求会把 model 改为 gpt-5.5 */
+	StandbyForceGPT55Enabled bool   `yaml:"standby-force-gpt55-enabled"`
+	DBEnabled                bool   `yaml:"db-enabled"`
+	DBDriver                 string `yaml:"db-driver"`
+	DBHost                   string `yaml:"db-host"`
+	DBPort                   int    `yaml:"db-port"`
+	DBUser                   string `yaml:"db-user"`
+	DBPassword               string `yaml:"db-password"`
+	DBName                   string `yaml:"db-name"`
+	DBSSLMode                string `yaml:"db-sslmode"`
+	DBDSN                    string `yaml:"db-dsn"`
 	/* DBMaxOpenConns / DBMaxIdleConns 为 0 时按 refresh-concurrency 自动估算 */
 	DBMaxOpenConns        int    `yaml:"db-max-open-conns"`
 	DBMaxIdleConns        int    `yaml:"db-max-idle-conns"`

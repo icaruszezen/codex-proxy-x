@@ -224,6 +224,8 @@ type RetryConfig struct {
 	ConcurrentRetry429Timeout time.Duration
 	/* PickIgnoringCooldownFn 忽略冷却状态的选号函数，用于并发重试时取回冷却中的账号 */
 	PickIgnoringCooldownFn func(model string, excluded map[string]bool) (*auth.Account, error)
+	/* AdjustRequestBodyFn 选号后、构建上游请求前按账号调整请求体；返回 body 与用于日志/后续发送的模型名 */
+	AdjustRequestBodyFn func(acc *auth.Account, model string, body []byte) ([]byte, string)
 }
 
 /**
@@ -392,10 +394,21 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 	var lastErr error
 	var last429 bool /* 最近一次失败是否为 429 */
 
-	bodyReader := bytes.NewReader(codexBody)
 	trySend := func(account *auth.Account, attemptOneBased, maxLabel int, pickDur time.Duration) (*http.Response, error) {
 		startAttempt := time.Now()
-		log.Debugf("send attempt %d/%d account=%s model=%s stream=%v", attemptOneBased, maxLabel, account.GetEmail(), model, stream)
+		attemptBody := codexBody
+		attemptModel := model
+		if rc.AdjustRequestBodyFn != nil {
+			attemptBody, attemptModel = rc.AdjustRequestBodyFn(account, model, codexBody)
+			if len(attemptBody) == 0 {
+				attemptBody = codexBody
+			}
+			if attemptModel == "" {
+				attemptModel = model
+			}
+		}
+		bodyReader := bytes.NewReader(attemptBody)
+		log.Debugf("send attempt %d/%d account=%s model=%s stream=%v", attemptOneBased, maxLabel, account.GetEmail(), attemptModel, stream)
 
 		const maxSameAccount401Rounds = 3
 		var lastStatus *StatusError
@@ -413,10 +426,10 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 				return nil, fmt.Errorf("%w: %w", errCodexBuildRequest, err)
 			}
 			applyCodexHeaders(httpReq, account, stream)
-			apidebug.TraceCodexUpstreamRequest(ctx, attemptOneBased, maxLabel, account.GetEmail(), apiURL, httpReq.Header, codexBody)
+			apidebug.TraceCodexUpstreamRequest(ctx, attemptOneBased, maxLabel, account.GetEmail(), apiURL, httpReq.Header, attemptBody)
 			buildDur := time.Since(buildStart)
 			dialTarget := effectiveDialTarget(httpReq.URL, e.resolveAddr)
-			log.Debugf("upstream request model=%s stream=%v account=%s attempt=%d/%d method=%s url=%s dial_target=%s", model, stream, account.GetEmail(), attemptOneBased, maxLabel, httpReq.Method, httpReq.URL.String(), dialTarget)
+			log.Debugf("upstream request model=%s stream=%v account=%s attempt=%d/%d method=%s url=%s dial_target=%s", attemptModel, stream, account.GetEmail(), attemptOneBased, maxLabel, httpReq.Method, httpReq.URL.String(), dialTarget)
 
 			doStart := time.Now()
 			httpResp, err := e.httpClient.Do(httpReq)
@@ -425,7 +438,7 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 				account.RecordFailure()
 				netErr := fmt.Errorf("请求发送失败: %w", err)
 				apidebug.TraceCodexUpstreamNetError(ctx, attemptOneBased, account.GetEmail(), apiURL, err)
-				log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=ERR err=%v", model, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), err)
+				log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=ERR err=%v", attemptModel, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), err)
 				if rc.OnAfterUpstreamErrFn != nil {
 					rc.OnAfterUpstreamErrFn(account, 0)
 				}
@@ -434,7 +447,7 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 
 			if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
 				apidebug.TraceCodexUpstreamResponse(ctx, attemptOneBased, account.GetEmail(), httpResp.StatusCode, nil, apidebug.PhaseResponse)
-				log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=%d", model, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), httpResp.StatusCode)
+				log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=%d", attemptModel, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), httpResp.StatusCode)
 				log.Debugf("send attempt success status=%d account=%s elapsed=%v", httpResp.StatusCode, account.GetEmail(), time.Since(startAttempt).Round(time.Millisecond))
 				return httpResp, nil
 			}
@@ -455,7 +468,7 @@ func (e *Executor) sendWithRetry(ctx context.Context, rc RetryConfig, model stri
 
 			lastStatus = &StatusError{Code: httpResp.StatusCode, Body: errBody}
 			apidebug.TraceCodexUpstreamResponse(ctx, attemptOneBased, account.GetEmail(), httpResp.StatusCode, errBody, apidebug.PhaseError)
-			log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=%d", model, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), httpResp.StatusCode)
+			log.Debugf("send stage model=%s account=%s attempt=%d/%d pick=%v build=%v upstream_wait=%v total=%v status=%d", attemptModel, account.GetEmail(), attemptOneBased, maxLabel, pickDur, buildDur, doDur, time.Since(startAttempt), httpResp.StatusCode)
 
 			if httpResp.StatusCode == 401 && rc.On401Fn != nil {
 				if did401Refresh {
@@ -715,8 +728,17 @@ func (e *Executor) concurrentRetryAfter429(
 
 	for _, acc := range accounts {
 		go func(account *auth.Account) {
-			body := make([]byte, len(codexBody))
-			copy(body, codexBody)
+			body := codexBody
+			attemptModel := model
+			if rc.AdjustRequestBodyFn != nil {
+				body, attemptModel = rc.AdjustRequestBodyFn(account, model, codexBody)
+				if len(body) == 0 {
+					body = codexBody
+				}
+				if attemptModel == "" {
+					attemptModel = model
+				}
+			}
 			reader := bytes.NewReader(body)
 
 			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, reader)
@@ -726,7 +748,7 @@ func (e *Executor) concurrentRetryAfter429(
 			}
 			applyCodexHeaders(httpReq, account, stream)
 
-			log.Debugf("429 并发重试 发送: account=%s model=%s", account.GetEmail(), model)
+			log.Debugf("429 并发重试 发送: account=%s model=%s", account.GetEmail(), attemptModel)
 			httpResp, err := e.httpClient.Do(httpReq)
 			if err != nil {
 				account.RecordFailure()
