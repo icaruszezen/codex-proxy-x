@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codex-proxy/internal/apidebug"
@@ -75,7 +76,8 @@ type ProxyHandler struct {
 	manager                   *auth.Manager
 	standbyCtrl               *standby.Controller /* 主备账号池协调器；nil 时退化为只用 manager */
 	standbyHealthChecker      *auth.HealthChecker /* 备用池手动健康检查复用，与定时健康检查器共享配置 */
-	standbyForceGPT55Enabled  bool                /* true 时仅备用池上游请求强制使用 gpt-5.5 */
+	standbyForceGPT55Enabled  atomic.Bool         /* true 时仅备用池上游请求强制使用 gpt-5.5 */
+	configPath                string              /* 当前启动使用的配置文件路径，用于管理端保存少量运行配置 */
 	executor                  *executor.Executor
 	apiKeys                   []string
 	maxRetry                  int
@@ -122,7 +124,7 @@ type auth401RecoverTrack struct {
  * @param debugUpstreamStream - 是否 Info 打印上游 Codex SSE 原文（对应配置 debug-upstream-stream）
  * @returns *ProxyHandler - 代理处理器实例
  */
-func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, newapiService *notify.NewAPIService, upstreamProviderService *upstream.Service, apiDebugStore *apidebug.Store, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, standbyForceGPT55Enabled bool, indexHTML []byte) *ProxyHandler {
+func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []string, maxRetry int, enableHealthyRetry bool, proxyURL string, baseURL string, enableHTTP2 bool, backendDomain string, backendResolveAddress string, quotaCheckConcurrency int, quotaCheckCacheTTLSec int, quotaChecker *auth.QuotaChecker, qmsgService *notify.Service, newapiService *notify.NewAPIService, upstreamProviderService *upstream.Service, apiDebugStore *apidebug.Store, quotaPrecheck bool, emptyRetryMax int, debugUpstreamStream bool, enableModelFast bool, enableModel1M bool, enableModelImage bool, enableWebSocket bool, debugWSStream bool, concurrentRetry429 bool, concurrentRetry429TimeoutSec int, standbyCtrl *standby.Controller, standbyHealthChecker *auth.HealthChecker, standbyForceGPT55Enabled bool, configPath string, indexHTML []byte) *ProxyHandler {
 	if maxRetry < 0 {
 		maxRetry = 0
 	}
@@ -132,30 +134,30 @@ func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []s
 	if quotaChecker == nil {
 		quotaChecker = auth.NewQuotaChecker(baseURL, proxyURL, quotaCheckConcurrency, enableHTTP2, backendDomain, backendResolveAddress, time.Duration(quotaCheckCacheTTLSec)*time.Second)
 	}
-	return &ProxyHandler{
-		manager:                  manager,
-		standbyCtrl:              standbyCtrl,
-		standbyHealthChecker:     standbyHealthChecker,
-		standbyForceGPT55Enabled: standbyForceGPT55Enabled,
-		executor:                 exec,
-		apiKeys:                  apiKeys,
-		maxRetry:                 maxRetry,
-		enableHealthyRetry:       enableHealthyRetry,
-		quotaChecker:             quotaChecker,
-		qmsgService:              qmsgService,
-		newapiService:            newapiService,
-		upstreamProviderService:  upstreamProviderService,
-		apiDebug:                 apiDebugStore,
-		quotaPrecheck:            quotaPrecheck,
-		indexHTML:                indexHTML,
-		emptyRetryMax:            emptyRetryMax,
-		debugUpstreamStream:      debugUpstreamStream,
-		enableModelFast:          enableModelFast,
-		enableModel1M:            enableModel1M,
-		enableModelImage:         enableModelImage,
-		enableWebSocket:          enableWebSocket,
-		debugWSStream:            debugWSStream,
-		concurrentRetry429:       concurrentRetry429,
+	h := &ProxyHandler{
+		manager:                 manager,
+		standbyCtrl:             standbyCtrl,
+		standbyHealthChecker:    standbyHealthChecker,
+		configPath:              strings.TrimSpace(configPath),
+		executor:                exec,
+		apiKeys:                 apiKeys,
+		maxRetry:                maxRetry,
+		enableHealthyRetry:      enableHealthyRetry,
+		quotaChecker:            quotaChecker,
+		qmsgService:             qmsgService,
+		newapiService:           newapiService,
+		upstreamProviderService: upstreamProviderService,
+		apiDebug:                apiDebugStore,
+		quotaPrecheck:           quotaPrecheck,
+		indexHTML:               indexHTML,
+		emptyRetryMax:           emptyRetryMax,
+		debugUpstreamStream:     debugUpstreamStream,
+		enableModelFast:         enableModelFast,
+		enableModel1M:           enableModel1M,
+		enableModelImage:        enableModelImage,
+		enableWebSocket:         enableWebSocket,
+		debugWSStream:           debugWSStream,
+		concurrentRetry429:      concurrentRetry429,
 		concurrentRetry429Timeout: func() time.Duration {
 			if concurrentRetry429TimeoutSec > 0 {
 				return time.Duration(concurrentRetry429TimeoutSec) * time.Second
@@ -163,10 +165,11 @@ func NewProxyHandler(manager *auth.Manager, exec *executor.Executor, apiKeys []s
 			return 30 * time.Second
 		}(),
 	}
+	h.standbyForceGPT55Enabled.Store(standbyForceGPT55Enabled)
+	return h
 }
 
-/**
- * RegisterRoutes 注册所有 HTTP 路由
+/** 注册所有 HTTP 路由
  * @param r - FastHTTP 路由实例
  */
 func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
@@ -244,6 +247,7 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	apiDebugConfigHandler := h.handleAPIDebugConfig
 	apiDebugTracesHandler := h.handleAPIDebugTraces
 	standbyStateHandler := h.handleStandbyState
+	standbyConfigHandler := h.handleStandbyConfig
 	standbyIngestHandler := h.handleStandbyAccountsIngest
 	standbyExportHandler := h.handleStandbyAccountsExport
 	standbyDeleteHandler := h.handleStandbyAccountDelete
@@ -265,6 +269,7 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 		apiDebugConfigHandler = h.authMiddleware(h.handleAPIDebugConfig)
 		apiDebugTracesHandler = h.authMiddleware(h.handleAPIDebugTraces)
 		standbyStateHandler = h.authMiddleware(h.handleStandbyState)
+		standbyConfigHandler = h.authMiddleware(h.handleStandbyConfig)
 		standbyIngestHandler = h.authMiddleware(h.handleStandbyAccountsIngest)
 		standbyExportHandler = h.authMiddleware(h.handleStandbyAccountsExport)
 		standbyDeleteHandler = h.authMiddleware(h.handleStandbyAccountDelete)
@@ -292,6 +297,8 @@ func (h *ProxyHandler) RegisterRoutes(r *fasthttprouter.Router) {
 	r.GET("/admin/api-debug/traces", apiDebugTracesHandler)
 	/* 备用账号池 */
 	r.GET("/admin/standby/state", standbyStateHandler)
+	r.GET("/admin/standby/config", standbyConfigHandler)
+	r.PUT("/admin/standby/config", standbyConfigHandler)
 	r.POST("/admin/standby/accounts/ingest", standbyIngestHandler)
 	r.POST("/admin/standby/accounts/export", standbyExportHandler)
 	r.POST("/admin/standby/accounts/delete", standbyDeleteHandler)
@@ -497,7 +504,7 @@ func (h *ProxyHandler) buildRetryConfigOnce() executor.RetryConfig {
 		return h.manager
 	}
 	adjustRequestBody := func(acc *auth.Account, model string, body []byte) ([]byte, string) {
-		if !h.standbyForceGPT55Enabled || acc == nil || len(body) == 0 {
+		if !h.standbyForceGPT55Enabled.Load() || acc == nil || len(body) == 0 {
 			return body, model
 		}
 		mgr := managerOf(acc)

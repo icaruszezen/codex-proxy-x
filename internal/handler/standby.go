@@ -13,12 +13,90 @@ package handler
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 
 	"codex-proxy/internal/auth"
 
 	"github.com/valyala/fasthttp"
+	"gopkg.in/yaml.v3"
 )
+
+type standbyConfigRequest struct {
+	StandbyForceGPT55Enabled bool `json:"standby_force_gpt55_enabled"`
+}
+
+func (h *ProxyHandler) handleStandbyConfig(ctx *fasthttp.RequestCtx) {
+	switch string(ctx.Method()) {
+	case fasthttp.MethodGet:
+		writeJSON(ctx, fasthttp.StatusOK, map[string]any{
+			"object": "standby_config",
+			"config": map[string]any{
+				"standby_force_gpt55_enabled": h.standbyForceGPT55Enabled.Load(),
+			},
+		})
+	case fasthttp.MethodPut:
+		h.handleStandbyConfigSave(ctx)
+	default:
+		writeJSON(ctx, fasthttp.StatusMethodNotAllowed, map[string]any{
+			"error": map[string]any{"message": "方法不允许", "type": "invalid_request_error"},
+		})
+	}
+}
+
+func (h *ProxyHandler) handleStandbyConfigSave(ctx *fasthttp.RequestCtx) {
+	body := ctx.PostBody()
+	if len(body) == 0 {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "请求体不能为空", "type": "invalid_request_error"},
+		})
+		return
+	}
+	var req standbyConfigRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": "JSON 解析失败", "type": "invalid_request_error"},
+		})
+		return
+	}
+	if err := h.saveStandbyConfigToFile(req.StandbyForceGPT55Enabled); err != nil {
+		writeJSON(ctx, fasthttp.StatusBadRequest, map[string]any{
+			"error": map[string]any{"message": err.Error(), "type": "invalid_request_error"},
+		})
+		return
+	}
+	h.standbyForceGPT55Enabled.Store(req.StandbyForceGPT55Enabled)
+	writeJSON(ctx, fasthttp.StatusOK, map[string]any{
+		"object": "standby_config",
+		"config": map[string]any{
+			"standby_force_gpt55_enabled": h.standbyForceGPT55Enabled.Load(),
+		},
+	})
+}
+
+func (h *ProxyHandler) saveStandbyConfigToFile(enabled bool) error {
+	path := strings.TrimSpace(h.configPath)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root == nil {
+		root = map[string]any{}
+	}
+	root["standby-force-gpt55-enabled"] = enabled
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0644)
+}
 
 /* standbyManager 安全获取备用池 Manager；未配置时为 nil */
 func (h *ProxyHandler) standbyManager() *auth.Manager {

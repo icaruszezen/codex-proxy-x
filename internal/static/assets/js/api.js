@@ -637,6 +637,42 @@ export async function requestStandbyState(cred, options = {}, signal) {
   };
 }
 
+export async function requestStandbyConfig(cred, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/config"), {
+    method: "GET",
+    headers: buildHeaders(cred),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return data?.config || {};
+}
+
+export async function saveStandbyConfig(cred, config, signal) {
+  if (!cred?.apiUrl) {
+    throw new Error("请输入 API 地址");
+  }
+  const body = {
+    standby_force_gpt55_enabled: Boolean(config?.standbyForceGPT55Enabled ?? config?.standby_force_gpt55_enabled)
+  };
+  const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/config"), {
+    method: "PUT",
+    headers: buildHeaders(cred, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!res.ok) {
+    throw await buildRequestError(res);
+  }
+  const data = await res.json();
+  return data?.config || {};
+}
+
 export async function requestStandbyIngest(cred, payload, signal) {
   const submitFormat = payload?.submitFormat || payload?.format;
   const res = await fetch(buildEndpointUrl(cred.apiUrl, "/admin/standby/accounts/ingest"), {

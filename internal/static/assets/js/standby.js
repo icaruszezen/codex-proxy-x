@@ -1,6 +1,8 @@
 import {
   isCredentialError,
   requestStandbyState,
+  requestStandbyConfig,
+  saveStandbyConfig,
   requestStandbyIngest,
   requestStandbyExport,
   requestStandbyDelete,
@@ -36,7 +38,9 @@ export function createStandbyFeature({
     isLoading: false,
     isImporting: false,
     isExporting: false,
+    isSavingConfig: false,
     fetchController: null,
+    configController: null,
     importController: null,
     healthController: null,
     importResult: null
@@ -168,6 +172,80 @@ export function createStandbyFeature({
         </tr>
       `;
     }).join("");
+  }
+
+  function updateConfigControls() {
+    if (els.standbyConfigSaveBtn) {
+      els.standbyConfigSaveBtn.disabled = state.isSavingConfig;
+      els.standbyConfigSaveBtn.textContent = state.isSavingConfig ? "保存中..." : "保存开关";
+    }
+    if (els.standbyForceGPT55Enabled) {
+      els.standbyForceGPT55Enabled.disabled = state.isSavingConfig;
+    }
+  }
+
+  function applyConfig(config = {}) {
+    const enabled = Boolean(config.standby_force_gpt55_enabled ?? config.standbyForceGPT55Enabled);
+    if (els.standbyForceGPT55Enabled) {
+      els.standbyForceGPT55Enabled.checked = enabled;
+    }
+    if (els.standbyConfigStatus) {
+      els.standbyConfigStatus.textContent = enabled ? "已开启：备用池强制 gpt-5.5" : "未开启";
+    }
+  }
+
+  async function loadConfig() {
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials?.();
+      return;
+    }
+    if (state.configController) state.configController.abort();
+    const controller = new AbortController();
+    state.configController = controller;
+    try {
+      const config = await requestStandbyConfig(cred, controller.signal);
+      applyConfig(config);
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      const message = error?.message || "加载备用池配置失败";
+      if (els.standbyConfigState) {
+        els.standbyConfigState.innerHTML = buildAlert("error", message);
+      }
+      if (isCredentialError(error)) onCredentialError?.(message, error);
+    } finally {
+      if (state.configController === controller) state.configController = null;
+    }
+  }
+
+  async function saveConfig() {
+    if (state.isSavingConfig) return;
+    const cred = getCredentials();
+    if (!cred?.apiUrl) {
+      onMissingCredentials?.();
+      return;
+    }
+    const enabled = Boolean(els.standbyForceGPT55Enabled?.checked);
+    const controller = new AbortController();
+    state.isSavingConfig = true;
+    updateConfigControls();
+    if (els.standbyConfigState) els.standbyConfigState.innerHTML = "";
+    try {
+      const saved = await saveStandbyConfig(cred, { standbyForceGPT55Enabled: enabled }, controller.signal);
+      applyConfig(saved);
+      if (els.standbyConfigState) {
+        els.standbyConfigState.innerHTML = buildAlert("success", "备用池模型路由开关已保存", enabled ? "备用池请求将强制使用 gpt-5.5。" : "备用池请求将保留原始模型。");
+      }
+    } catch (error) {
+      const message = error?.message || "保存备用池配置失败";
+      if (els.standbyConfigState) {
+        els.standbyConfigState.innerHTML = buildAlert("error", "保存失败", escapeHtml(message));
+      }
+      if (isCredentialError(error)) onCredentialError?.(message, error);
+    } finally {
+      state.isSavingConfig = false;
+      updateConfigControls();
+    }
   }
 
   function updateExportButton() {
@@ -513,6 +591,19 @@ export function createStandbyFeature({
     if (els.standbyRefreshBtn) {
       els.standbyRefreshBtn.addEventListener("click", () => {
         void fetchState();
+        void loadConfig();
+      });
+    }
+    if (els.standbyConfigSaveBtn) {
+      els.standbyConfigSaveBtn.addEventListener("click", () => {
+        void saveConfig();
+      });
+    }
+    if (els.standbyForceGPT55Enabled) {
+      els.standbyForceGPT55Enabled.addEventListener("change", () => {
+        if (els.standbyConfigStatus) {
+          els.standbyConfigStatus.textContent = els.standbyForceGPT55Enabled.checked ? "待保存：将开启" : "待保存：将关闭";
+        }
       });
     }
     if (els.standbyImportSubmitBtn) {
@@ -555,10 +646,11 @@ export function createStandbyFeature({
     init,
     fetchState,
     ensureLoaded: () => {
+      const load = loadConfig();
       if (!state.snapshot) {
-        return fetchState();
+        return Promise.all([fetchState(), load]).then(() => undefined);
       }
-      return Promise.resolve();
+      return load;
     }
   };
 }
