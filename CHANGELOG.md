@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.17.0...v1.17.1) (2026-06-02)
+
+
+### ♻️ 代码重构
+
+* update fallback logic to prioritize standby provider over primary, enhancing error handling and response collection ([123c6c3](https://github.com/icaruszezen/codex-proxy-x/commit/123c6c3a7622e3d34b057a6a0331a554a7b8790a))
+
 ## [1.17.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.16.1...v1.17.0) (2026-05-30)
 
 
