@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.16.1...v1.17.0) (2026-05-30)
+
+
+### ✨ 新功能
+
+* 添加 API 调试功能，记录推理请求追踪 ([80f6322](https://github.com/icaruszezen/codex-proxy-x/commit/80f63220b45ae313bba6280b089bc15f7f04bfe8))
+
 ## [1.16.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.16.0...v1.16.1) (2026-05-30)
 
 
