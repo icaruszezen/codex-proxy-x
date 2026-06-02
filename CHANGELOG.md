@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.17.2...v1.18.0) (2026-06-02)
+
+
+### ✨ 新功能
+
+* add standby account pool configuration and model adjustment for upstream requests ([e15f5b9](https://github.com/icaruszezen/codex-proxy-x/commit/e15f5b9869b98b7e96adc07ceda9ce4c99d5cf8e))
+
 ## [1.17.2](https://github.com/icaruszezen/codex-proxy-x/compare/v1.17.1...v1.17.2) (2026-06-02)
 
 
