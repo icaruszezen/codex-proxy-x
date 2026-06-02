@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.1](https://github.com/icaruszezen/codex-proxy-x/compare/v1.18.0...v1.18.1) (2026-06-02)
+
+
+### 🐛 错误修复
+
+* remove trailing whitespace in config.example.yaml ([fc8c4c1](https://github.com/icaruszezen/codex-proxy-x/commit/fc8c4c1b8a06598dcac8594c72b70d9b68cae97f))
+
 ## [1.18.0](https://github.com/icaruszezen/codex-proxy-x/compare/v1.17.2...v1.18.0) (2026-06-02)
 
 
